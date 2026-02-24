@@ -72,6 +72,11 @@ ATHLETIC_BILBAO_ID = "621"
 # Minimum market value (euros) for players outside top leagues when filtering
 MIN_FILTER_MARKET_VALUE = 100_000
 
+# How many teams above the buying club (by total market value ranking) are
+# still considered valid sources of players.  Reflects that clubs can
+# occasionally sign from slightly richer teams.
+TRANSFER_TIER_EXTENSION = 5
+
 
 @dataclass
 class SoldPlayer:
@@ -493,78 +498,95 @@ class TransferSimulator:
         athletic_eligible_ids: Optional[set] = None,
     ) -> Optional[str]:
         """
-        Find a random team that can afford the player.
-        
-        A team can afford a player if: team_market_value >= player_market_value * 10
-        The signing makes more sense if: player_market_value * 200 >= team_market_value (to avoid Barcelona buying really cheap players for example)
-        
-        Teams like "Without Club", "Career break" and "Retired" are never
-        valid destinations.
-        
-        Athletic Bilbao (and its sub-clubs) can only be a destination if the
-        player has played for an Athletic family club at some point — mirroring
-        their real-world buying policy.
-        
+        Find a random destination team for a player being sold.
+
+        Directional rule: players move to equal-or-better clubs (by total
+        market value).  We extend the range by ``TRANSFER_TIER_EXTENSION``
+        positions below the player's current team so that slightly weaker
+        teams are also considered.  Players aged >= 30 can go to any team.
+
+        Additional filters (on top of directional):
+        - Team can "afford" the player: team_value >= player_value * 10
+        - Team is not excluded (e.g. current club)
+        - Team is not an invalid destination ("Retired", etc.)
+        - Athletic family policy respected
+
         Args:
             player: The player being sold
             excluded_teams: Teams to exclude (e.g., current club)
             athletic_eligible_ids: Set of player IDs with Athletic family
                 history.  When provided, Athletic teams are excluded as
                 destinations for players NOT in this set.
-        
+
         Returns:
-            Team name or None if no team can afford the player
+            Team name or None if no suitable team found
         """
         if player.market_value is None:
             return None
-        
-        min_team_value = min(player.market_value * 10, 1_000_000_000)
-        max_team_value = max(player.market_value * 200, 200_000_000)
-        excluded_lower = {t.lower() for t in excluded_teams if t}
 
+        excluded_lower = {t.lower() for t in excluded_teams if t}
         player_is_athletic_eligible = (
             athletic_eligible_ids is not None
             and player.player_id in athletic_eligible_ids
         )
+        is_veteran = (player.age or 0) >= 30
 
-        def _valid_destination(team_name: str) -> bool:
+        # Build the set of teams this player could realistically join
+        player_team_value = self.team_market_values.get(player.team or "", 0)
+        ranked = sorted(
+            self.team_market_values.items(), key=lambda kv: kv[1], reverse=True,
+        )
+
+        if is_veteran:
+            # Veterans can go anywhere
+            directional_teams = {name for name, _ in ranked}
+        else:
+            # Find the player's current team rank
+            player_rank = next(
+                (i for i, (name, _) in enumerate(ranked)
+                 if name == (player.team or "")),
+                0,
+            )
+            # Equal-or-better teams (rank <= player_rank) plus TIER_EXTENSION below
+            max_rank = min(len(ranked), player_rank + TRANSFER_TIER_EXTENSION + 1)
+            directional_teams = {name for name, _ in ranked[:max_rank]}
+
+        min_team_value = min(player.market_value * 10, 1_000_000_000)
+
+        def _valid(team_name: str, team_value: float) -> bool:
             if team_name.lower() in excluded_lower:
                 return False
             if self._is_invalid_destination(team_name):
                 return False
-            # Athletic family clubs only accept players with Athletic history
+            if team_name not in directional_teams:
+                return False
+            if team_value < min_team_value:
+                return False
             if (team_name.lower() in ATHLETIC_FAMILY_NAMES
                     and not player_is_athletic_eligible):
                 return False
             return True
 
-        eligible_teams = [
-            team_name
-            for team_name, team_value in self.team_market_values.items()
-            if (min_team_value <= team_value <= max_team_value
-                and _valid_destination(team_name))
+        eligible = [
+            name for name, val in self.team_market_values.items()
+            if _valid(name, val)
         ]
-        
-        if eligible_teams:
-            return random.choice(eligible_teams)
-        else:
-            # Fallback: if no team in range, pick from top 5 or bottom 5 by value
-            sorted_teams = sorted(self.team_market_values.items(), key=lambda kv: kv[1])
-            if not sorted_teams:
-                return None
-            if player.market_value * 10 > sorted_teams[-1][1]:
-                # Player is too expensive for any team -> pick from top 5
-                fallback = [
-                    name for name, _ in sorted_teams[-5:]
-                    if _valid_destination(name)
-                ]
-            else:
-                # Player is too cheap for the range -> pick from bottom 5
-                fallback = [
-                    name for name, _ in sorted_teams[:5]
-                    if _valid_destination(name)
-                ]
-            return random.choice(fallback) if fallback else None
+
+        if eligible:
+            return random.choice(eligible)
+
+        # Fallback for veterans or extreme cases
+        if is_veteran:
+            fallback = [
+                name for name, val in ranked
+                if val >= min_team_value
+                and name.lower() not in excluded_lower
+                and not self._is_invalid_destination(name)
+            ]
+            if fallback:
+                return random.choice(fallback[:10])
+
+        return None
     
     def _sell_random_players(
         self,
@@ -805,6 +827,36 @@ class TransferSimulator:
         """Return True if players from this team should not be available for signing."""
         return team_name.lower() in INVALID_ORIGIN_TEAM_NAMES
 
+    def _build_signable_teams(self) -> set:
+        """Return the set of team names the buying club can realistically sign from.
+
+        A player moves to an equal-or-better club.  So this club can sign
+        players from teams whose total market value <= this club's value.
+        We extend the range by ``TRANSFER_TIER_EXTENSION`` positions above
+        the buying club so that slightly richer teams are also considered
+        (reflects occasional upward mobility in the market).
+
+        Players aged >= 30 bypass this filter entirely (handled in caller).
+        """
+        club_value = self.team_market_values.get(self.club_name, 0)
+
+        # Teams sorted descending by value
+        ranked = sorted(
+            self.team_market_values.items(), key=lambda kv: kv[1], reverse=True,
+        )
+
+        # Find the buying club's rank (0-based, 0 = richest)
+        club_rank = next(
+            (i for i, (name, _) in enumerate(ranked) if name == self.club_name),
+            len(ranked),
+        )
+
+        # All teams at club_rank or below (equal or lower value)
+        # plus TRANSFER_TIER_EXTENSION teams above (slightly richer)
+        min_rank = max(0, club_rank - TRANSFER_TIER_EXTENSION)
+        signable = {name for name, _ in ranked[min_rank:]}
+        return signable
+
     def _get_available_players(
         self,
         all_players: List[Player],
@@ -815,16 +867,28 @@ class TransferSimulator:
         """
         Get players available for signing (not in club).
 
+        Applies the directional transfer rule: players only move to
+        equal-or-better clubs (by total market value), with a small
+        extension of ``TRANSFER_TIER_EXTENSION`` teams above.
+        Players aged >= 30 bypass the team-value restriction.
+
         Excludes players from invalid origin teams (e.g. "Retired").
         If *is_athletic* is True (the buying club is Athletic Bilbao),
         only players present in *athletic_eligible_ids* are eligible.
         """
         club_ids = {p.player_id for p in club_players}
-        available = [
-            p for p in all_players
-            if p.player_id not in club_ids
-            and not self._is_invalid_origin(p.team or "")
-        ]
+        signable_teams = self._build_signable_teams()
+
+        available = []
+        for p in all_players:
+            if p.player_id in club_ids:
+                continue
+            if self._is_invalid_origin(p.team or ""):
+                continue
+            # Directional filter: team must be in signable set, or player >= 30
+            if (p.team or "") not in signable_teams and (p.age or 0) < 30:
+                continue
+            available.append(p)
 
         # Athletic Bilbao can only buy players with Athletic history
         if is_athletic and athletic_eligible_ids is not None:
