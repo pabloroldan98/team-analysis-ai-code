@@ -231,7 +231,6 @@ def _preload_team_data(lang: str, club_name: str, season: str):
         club_name=club_name,
         season=season,
         transfer_budget=0,
-        salary_budget=0,
     )
     with st.spinner(""):
         try:
@@ -310,16 +309,31 @@ def render_sell_selection(lang: str, squad) -> Optional[List[str]]:
 # STEP 4 – SIGNINGS PER POSITION
 # =============================================================================
 
+def _total_combinations(total: int, max_per_pos: int = 3) -> List[List[int]]:
+    """Return all 4-element arrays [GK, DEF, MID, ATT] that sum to *total*
+    with each element in [0, max_per_pos]."""
+    combos = []
+    for gk in range(min(total, max_per_pos) + 1):
+        for df in range(min(total - gk, max_per_pos) + 1):
+            for mid in range(min(total - gk - df, max_per_pos) + 1):
+                att = total - gk - df - mid
+                if 0 <= att <= max_per_pos:
+                    combos.append([gk, df, mid, att])
+    return combos
+
+
 def render_buy_counts(lang: str) -> Dict[str, Tuple[int, int]]:
-    """Render exact or range inputs for how many players to sign per position.
+    """Render exact, range or total inputs for how many players to sign per position.
 
     Returns dict mapping position -> (min, max).  In exact mode min == max.
+    For 'total' mode the key ``_formations`` holds the pre-computed list of
+    formation arrays so the caller can pass them directly.
     """
     st.subheader(t(lang, "signings_per_position"))
 
     mode = st.radio(
         "mode",
-        options=["exact", "range"],
+        options=["exact", "range", "total"],
         format_func=lambda m: t(lang, f"buy_mode_{m}"),
         horizontal=True,
         key="buy_mode",
@@ -341,7 +355,7 @@ def render_buy_counts(lang: str) -> Dict[str, Tuple[int, int]]:
                     key=f"buy_exact_{pos}",
                 )
                 buy_counts[pos] = (n, n)
-    else:
+    elif mode == "range":
         st.caption(t(lang, "signings_range_help"))
         cols = st.columns(len(POS_ORDER))
         for i, pos in enumerate(POS_ORDER):
@@ -362,6 +376,17 @@ def render_buy_counts(lang: str) -> Dict[str, Tuple[int, int]]:
                     key=f"buy_max_{pos}",
                 )
                 buy_counts[pos] = (lo, hi)
+    else:
+        st.caption(t(lang, "signings_total_help"))
+        total = st.number_input(
+            t(lang, "total_players"),
+            min_value=0,
+            max_value=10,
+            value=5,
+            key="buy_total",
+        )
+        combos = _total_combinations(total)
+        buy_counts["_formations"] = combos
 
     return buy_counts
 
@@ -371,10 +396,10 @@ def render_buy_counts(lang: str) -> Dict[str, Tuple[int, int]]:
 # =============================================================================
 
 def render_budget(lang: str):
-    """Render budget inputs. Returns (transfer_budget, salary_budget, unlimited)."""
+    """Render budget inputs. Returns (transfer_budget, unlimited)."""
     st.subheader(t(lang, "budget_title"))
     st.caption(t(lang, "budget_extra_note"))
-    col_tb, col_sb, col_ul = st.columns([2, 2, 1])
+    col_tb, col_ul = st.columns([3, 1])
     with col_ul:
         st.markdown("<br>", unsafe_allow_html=True)
         unlimited = st.checkbox(t(lang, "unlimited_budget"), value=False)
@@ -383,17 +408,32 @@ def render_budget(lang: str):
             t(lang, "transfer_budget"), min_value=-2000, max_value=2000, value=0, step=10,
             disabled=unlimited,
         )
-    with col_sb:
-        salary_budget = st.number_input(
-            t(lang, "salary_budget"), min_value=-2000, max_value=2000, value=0, step=1,
-            disabled=unlimited,
-        )
 
-    st.caption(t(lang, "budget_first_note"))
-    st.caption(t(lang, "budget_note"))
-    st.caption(t(lang, "budget_example"))
+    return transfer_budget, unlimited
 
-    return transfer_budget, salary_budget, unlimited
+
+# =============================================================================
+# STEP 6 – SIGNING APPROACH
+# =============================================================================
+
+APPROACHES = ["max_value", "young_talents", "max_profit", "balanced"]
+
+
+def render_approach(lang: str) -> str:
+    """Render signing-approach selector. Returns the chosen approach key."""
+    st.subheader(t(lang, "approach_title"))
+
+    approach = st.radio(
+        "approach",
+        options=APPROACHES,
+        format_func=lambda a: t(lang, f"approach_{a}"),
+        horizontal=True,
+        key="approach",
+        label_visibility="collapsed",
+    )
+
+    st.caption(t(lang, f"approach_{approach}_help"))
+    return approach
 
 
 # =============================================================================
@@ -405,10 +445,10 @@ def run_simulation_with_progress(
     club_name: str,
     season: str,
     transfer_budget: int,
-    salary_budget: int,
     unlimited: bool,
     players_to_sell: Optional[List[str]] = None,
     buy_counts: Optional[Dict[str, Tuple[int, int]]] = None,
+    approach: str = "max_value",
 ):
     """Run TransferSimulator.run() while feeding a Streamlit progress bar + spinner."""
     progress = st.progress(0, text=t(lang, "step_loading"))
@@ -420,10 +460,7 @@ def run_simulation_with_progress(
         progress.progress(min(pct, 1.0), text=f"{icon} {t(lang, key)}")
 
     sim = st.session_state["preloaded_sim"]
-    sim.budget = min(
-        transfer_budget if not unlimited else 999_999,
-        (salary_budget if not unlimited else 999_999) * 10,
-    )
+    sim.budget = transfer_budget if not unlimited else 999_999
 
     with st.spinner(""):
         try:
@@ -434,6 +471,7 @@ def run_simulation_with_progress(
                 unlimited_budget=unlimited,
                 players_to_sell=players_to_sell,
                 buy_counts=buy_counts,
+                approach=approach,
             )
         except ValueError as exc:
             progress.empty()
@@ -768,14 +806,18 @@ def main():
     buy_counts = render_buy_counts(lang)
 
     # ── Step 5: Budget ───────────────────────────────────────────────────────
-    tb, sb, unlimited = render_budget(lang)
+    tb, unlimited = render_budget(lang)
 
-    # ── Step 6: Simulate ─────────────────────────────────────────────────────
+    # ── Step 6: Signing approach ─────────────────────────────────────────────
+    approach = render_approach(lang)
+
+    # ── Step 7: Simulate ─────────────────────────────────────────────────────
     if st.button(t(lang, "run_simulation"), type="primary", use_container_width=True):
         result = run_simulation_with_progress(
-            lang, club_name, season, tb, sb, unlimited,
+            lang, club_name, season, tb, unlimited,
             players_to_sell=players_to_sell,
             buy_counts=buy_counts,
+            approach=approach,
         )
         st.session_state["sim_result"] = result
         st.session_state["sim_clubs_data"] = clubs_data

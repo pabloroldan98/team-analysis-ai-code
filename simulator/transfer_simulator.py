@@ -13,7 +13,6 @@ Usage:
         club_name="Real Madrid",
         season="2023-2024",
         transfer_budget=100,  # millions
-        salary_budget=15,     # millions (annual)
     )
     result = sim.run()
 """
@@ -216,7 +215,6 @@ class TransferSimulator:
         club_name: str,
         season: str,
         transfer_budget: int,  # millions
-        salary_budget: int,    # millions (annual)
     ):
         """
         Initialize transfer simulator.
@@ -225,15 +223,11 @@ class TransferSimulator:
             club_name: Name of the club (e.g., "Real Madrid")
             season: Season string (e.g., "2023-2024")
             transfer_budget: Transfer budget in millions
-            salary_budget: Annual salary budget in millions
         """
         self.club_name = club_name
         self.season = season
         self.transfer_budget = transfer_budget
-        self.salary_budget = salary_budget
-        
-        # Budget = min(transfer, salary * 10)
-        self.budget = min(transfer_budget, salary_budget * 10)
+        self.budget = transfer_budget
         
         # Data containers
         self.club_players: List[Player] = []
@@ -860,6 +854,7 @@ class TransferSimulator:
         unlimited_budget: bool = False,
         players_to_sell: Optional[List[str]] = None,
         buy_counts: Optional[Dict[str, Tuple[int, int]]] = None,
+        approach: str = "max_value",
     ) -> TransferResult:
         f"""
         Run the transfer simulation.
@@ -887,6 +882,11 @@ class TransferSimulator:
             buy_counts: Optional per-position (min, max) range of players to buy.
                 E.g. ``{{"GK": (0, 1), "DEF": (1, 3), "MID": (0, 2), "ATT": (1, 2)}}``.
                 All combinations are evaluated and the best one is selected.
+            approach: Signing strategy to use:
+                - ``"max_value"``: maximize predicted future value (default)
+                - ``"young_talents"``: only players ≤ 23, maximize predicted value
+                - ``"max_profit"``: maximize expected profit (predicted − cost)
+                - ``"balanced"``: age-weighted predicted value (prime-age bonus)
 
         Returns:
             TransferResult with simulation details
@@ -1026,25 +1026,74 @@ class TransferSimulator:
             available_players, verbose=verbose, _cache=pred_cache
         )
 
+        # ── Apply signing approach ───────────────────────────────────────
+        knapsack_players = available_players
+        _remap_to_originals = False
+
+        if approach == "young_talents":
+            max_age = 23
+            knapsack_players = [
+                p for p in available_players if (p.age or 99) <= max_age
+            ]
+            if verbose:
+                print(f"  Approach '{approach}': filtered to {len(knapsack_players)} players (age ≤ {max_age})")
+
+        elif approach == "max_profit":
+            import copy
+            _remap_to_originals = True
+            knapsack_players = []
+            for p in available_players:
+                pc = copy.copy(p)
+                profit = (p.predicted_value or 0) - (p.market_value or 0)
+                pc.predicted_value = max(0, profit)
+                knapsack_players.append(pc)
+            if verbose:
+                print(f"  Approach '{approach}': optimizing for expected profit")
+
+        elif approach == "balanced":
+            import copy
+            _remap_to_originals = True
+            knapsack_players = []
+            for p in available_players:
+                pc = copy.copy(p)
+                age = p.age or 26
+                if 25 <= age <= 29:
+                    factor = 1.15
+                elif 22 <= age <= 24:
+                    factor = 1.0
+                elif age <= 21:
+                    factor = 0.90
+                elif 30 <= age <= 32:
+                    factor = 0.90
+                else:
+                    factor = 0.75
+                pc.predicted_value = (p.predicted_value or 0) * factor
+                knapsack_players.append(pc)
+            if verbose:
+                print(f"  Approach '{approach}': age-weighted predicted values")
+
         # ── Step 6/8: Knapsack optimisation ──────────────────────────────
         _progress(0.80, "step_knapsack")
         if verbose:
             print(f"  Finding optimal signings...")
 
         if buy_counts:
-            from itertools import product as _product
-            gk_lo, gk_hi = buy_counts.get("GK", (0, 0))
-            def_lo, def_hi = buy_counts.get("DEF", (0, 0))
-            mid_lo, mid_hi = buy_counts.get("MID", (0, 0))
-            att_lo, att_hi = buy_counts.get("ATT", (0, 0))
-            custom_formation = [
-                list(combo) for combo in _product(
-                    range(gk_lo, gk_hi + 1),
-                    range(def_lo, def_hi + 1),
-                    range(mid_lo, mid_hi + 1),
-                    range(att_lo, att_hi + 1),
-                )
-            ]
+            if "_formations" in buy_counts:
+                custom_formation = buy_counts["_formations"]
+            else:
+                from itertools import product as _product
+                gk_lo, gk_hi = buy_counts.get("GK", (0, 0))
+                def_lo, def_hi = buy_counts.get("DEF", (0, 0))
+                mid_lo, mid_hi = buy_counts.get("MID", (0, 0))
+                att_lo, att_hi = buy_counts.get("ATT", (0, 0))
+                custom_formation = [
+                    list(combo) for combo in _product(
+                        range(gk_lo, gk_hi + 1),
+                        range(def_lo, def_hi + 1),
+                        range(mid_lo, mid_hi + 1),
+                        range(att_lo, att_hi + 1),
+                    )
+                ]
             if verbose:
                 print(f"  {len(custom_formation)} formation combinations to evaluate")
         else:
@@ -1052,7 +1101,7 @@ class TransferSimulator:
             custom_formation = [[gk_needed, def_needed, mid_needed, att_needed]]
 
         results = best_full_teams(
-            available_players,
+            knapsack_players,
             formations=custom_formation,
             budget=total_budget * 1_000_000,
             use_predicted_value=True,
@@ -1066,9 +1115,16 @@ class TransferSimulator:
         total_predicted_value = 0.0
 
         if results:
-            recommended_formation, score, recommended_signings = results[0]
+            recommended_formation, score, selected = results[0]
+            if _remap_to_originals:
+                orig_map = {p.player_id: p for p in available_players}
+                recommended_signings = [
+                    orig_map.get(p.player_id, p) for p in selected
+                ]
+            else:
+                recommended_signings = selected
             total_signing_cost = sum((p.market_value or 0) for p in recommended_signings) / 1_000_000
-            total_predicted_value = score
+            total_predicted_value = sum((p.predicted_value or 0) for p in recommended_signings)
 
         result = TransferResult(
             club_name=self.club_name,
@@ -1107,7 +1163,6 @@ def main():
     parser.add_argument("--club", type=str, required=True, help="Club name")
     parser.add_argument("--season", type=str, default="2023-2024", help="Season")
     parser.add_argument("--transfer-budget", type=int, default=100, help="Transfer budget (millions)")
-    parser.add_argument("--salary-budget", type=int, default=15, help="Salary budget (millions/year)")
     parser.add_argument("--no-summary", action="store_true", help="Skip LLM summary generation")
     parser.add_argument("--filter-players", action="store_true", default=True,
                         help=f"Exclude players <€{MIN_FILTER_MARKET_VALUE/1_000_000:.1f}M unless in top 5 leagues or club's league (default: True)")
@@ -1121,6 +1176,9 @@ def main():
                         help="LLM provider (openai, anthropic, gemini)")
     parser.add_argument("--llm-api-key", type=str, default=None,
                         help="LLM API key (or use env vars)")
+    parser.add_argument("--approach", type=str, default="max_value",
+                        choices=["max_value", "young_talents", "max_profit", "balanced"],
+                        help="Signing approach (default: max_value)")
     
     args = parser.parse_args()
     
@@ -1128,7 +1186,6 @@ def main():
         club_name=args.club,
         season=args.season,
         transfer_budget=args.transfer_budget,
-        salary_budget=args.salary_budget,
     )
     
     result = sim.run(
@@ -1138,6 +1195,7 @@ def main():
         verbose=args.verbose,
         llm_provider=args.llm_provider,
         llm_api_key=args.llm_api_key,
+        approach=args.approach,
     )
     print(result)
 

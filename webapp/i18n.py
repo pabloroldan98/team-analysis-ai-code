@@ -18,11 +18,7 @@ TEXT = {
         "select_season": "Temporada",
         "select_club": "Club",
         "transfer_budget": "Presupuesto de fichajes (€M)",
-        "salary_budget": "Presupuesto salarial (€M/año)",
         "unlimited_budget": "Presupuesto ilimitado",
-        "budget_first_note": "Presupuesto efectivo = mín(fichajes, salario × 10).",
-        "budget_note": "Como los datos salariales de los jugadores no son públicos, asumimos que su salario anual ≈ 10% de su valor de mercado. Así, el factor limitante será el presupuesto de fichajes o el salarial, el que sea menor.",
-        "budget_example": "(Ejemplo: €100M de fichajes = €10M de salario)",
         "run_simulation": "Simular ventana de fichajes",
 
         # Progress
@@ -76,12 +72,26 @@ TEXT = {
         "signings_per_position": "Fichajes por posición",
         "buy_mode_exact": "Número exacto",
         "buy_mode_range": "Rango (mín–máx)",
+        "buy_mode_total": "Total de fichajes",
         "signings_exact_help": "Elige cuántos jugadores fichar en cada posición.",
         "signings_range_help": "Elige el rango por posición. Se probará cada combinación y se elegirá la mejor.",
+        "signings_total_help": "Elige cuántos jugadores fichar en total. Se probarán todas las combinaciones de posiciones (máx. 3 por posición) y se elegirá la mejor.",
+        "total_players": "Jugadores a fichar",
         "buy_min": "Mín",
         "buy_max": "Máx",
         "budget_title": "Presupuesto adicional",
         "budget_extra_note": "Este presupuesto es adicional al dinero obtenido por las ventas.",
+
+        # Approaches
+        "approach_title": "Estrategia de fichajes",
+        "approach_max_value": "Máximo valor",
+        "approach_max_value_help": "Ficha a los jugadores con mayor valor predicho futuro. Tiende a fichar estrellas caras.",
+        "approach_young_talents": "Jóvenes promesas",
+        "approach_young_talents_help": "Solo considera jugadores de 23 años o menos. Ideal para construir un proyecto a largo plazo.",
+        "approach_max_profit": "Máximo beneficio",
+        "approach_max_profit_help": "Optimiza el beneficio esperado (valor predicho − coste). Encuentra gangas infravaloradas.",
+        "approach_balanced": "Equilibrado",
+        "approach_balanced_help": "Prioriza jugadores en su mejor edad (25-29) con alto valor predicho. Equilibra rendimiento inmediato y valor.",
 
         # Positions
         "pos_gk": "POR",
@@ -106,11 +116,7 @@ TEXT = {
         "select_season": "Season",
         "select_club": "Club",
         "transfer_budget": "Transfer budget (€M)",
-        "salary_budget": "Salary budget (€M/year)",
         "unlimited_budget": "Unlimited budget",
-        "budget_first_note": "Effective budget = min(transfer, salary × 10).",
-        "budget_note": "Since player salary data is not public, we assume annual salary ≈ 10% of market value. Whichever budget is lower becomes the limiting factor.",
-        "budget_example": "(Example: €100M transfer = €10M salary)",
         "run_simulation": "Simulate transfer window",
 
         # Progress
@@ -164,12 +170,26 @@ TEXT = {
         "signings_per_position": "Signings per position",
         "buy_mode_exact": "Exact number",
         "buy_mode_range": "Range (min–max)",
+        "buy_mode_total": "Total signings",
         "signings_exact_help": "Choose how many players to sign per position.",
         "signings_range_help": "Choose the range per position. Every combination will be tested and the best one selected.",
+        "signings_total_help": "Choose how many players to sign in total. All position combinations (max 3 per position) will be tested and the best one selected.",
+        "total_players": "Players to sign",
         "buy_min": "Min",
         "buy_max": "Max",
         "budget_title": "Additional budget",
         "budget_extra_note": "This budget is on top of the money obtained from player sales.",
+
+        # Approaches
+        "approach_title": "Signing strategy",
+        "approach_max_value": "Maximum value",
+        "approach_max_value_help": "Sign the players with the highest predicted future value. Tends to sign expensive stars.",
+        "approach_young_talents": "Young talents",
+        "approach_young_talents_help": "Only considers players aged 23 or under. Great for building a long-term project.",
+        "approach_max_profit": "Maximum profit",
+        "approach_max_profit_help": "Optimizes expected profit (predicted value − cost). Finds undervalued bargains.",
+        "approach_balanced": "Balanced",
+        "approach_balanced_help": "Prioritizes prime-age players (25-29) with high predicted value. Balances immediate performance and value.",
 
         # Positions
         "pos_gk": "GK",

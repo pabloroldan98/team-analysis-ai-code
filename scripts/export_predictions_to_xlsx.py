@@ -56,7 +56,7 @@ def main():
     if args.verbose:
         print(f"  Loaded {len(all_players)} players")
 
-    sim = TransferSimulator(club_name="Export", season="today", transfer_budget=0, salary_budget=0)
+    sim = TransferSimulator(club_name="Export", season="today", transfer_budget=0)
     if args.verbose:
         print("Predicting future values for all players...")
     all_players = sim._predict_values(all_players, verbose=args.verbose)
