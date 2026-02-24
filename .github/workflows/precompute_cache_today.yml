@@ -5,9 +5,10 @@ name: Precompute Cache (Today)
 
 on:
   workflow_dispatch:
-  schedule:
-    # 23:30 UTC ≈ 00:30 Madrid (winter) / 01:30 Madrid (summer)
-    - cron: '30 23 * * *'
+  # No funcionará porque no se suben los json
+  # schedule:
+  #   # 23:30 UTC ≈ 00:30 Madrid (winter) / 01:30 Madrid (summer)
+  #   - cron: '30 23 * * *'
 
 concurrency:
   group: precompute-cache-today

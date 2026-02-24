@@ -224,8 +224,20 @@ def precompute_and_save(
     if verbose:
         print(f"\n[5/5] Saving to {cache_path} ...")
 
+    import numpy as np
+
+    class _NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+
     with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+        json.dump(payload, f, ensure_ascii=False, cls=_NumpyEncoder)
 
     size_mb = cache_path.stat().st_size / (1024 * 1024)
     if verbose:

@@ -5,9 +5,10 @@ name: Precompute Cache (Seasons)
 
 on:
   workflow_dispatch:
-  schedule:
-    # 1 July 00:30 UTC = season start
-    - cron: '30 0 1 7 *'
+  # No funcionará porque no se suben los json
+  # schedule:
+  #   # 1 July 00:30 UTC = season start
+  #   - cron: '30 0 1 7 *'
 
 concurrency:
   group: precompute-cache-seasons
