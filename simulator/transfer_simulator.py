@@ -246,6 +246,10 @@ class TransferSimulator:
         (e.g. for manual sell selection).  The results are cached on the
         instance so that ``run(preloaded=True)`` can skip these steps.
 
+        If a precomputed season cache exists (see
+        ``scripts/precompute_active_players_cache.py``) all heavy computation
+        is skipped and data is loaded from disk instantly.
+
         Returns:
             The club's player list (with ``predicted_value`` set).
         """
@@ -254,6 +258,38 @@ class TransferSimulator:
                 progress_callback(pct, key)
 
         _progress(0.05, "step_loading")
+
+        # Try full season cache first
+        from simulator.data_loader import load_season_cache
+        season_cache = load_season_cache(self.season)
+
+        if season_cache is not None:
+            self._used_cache = True
+            all_players = season_cache["players"]
+            self.all_players = all_players
+            self.team_market_values = season_cache["team_market_values"]
+            self._athletic_eligible_ids = season_cache["athletic_eligible_ids"]
+            self._is_athletic = self._is_athletic_club()
+
+            if verbose:
+                print(f"  Loaded from cache: {len(all_players)} players, "
+                      f"{len(self.team_market_values)} teams, "
+                      f"{len(self._athletic_eligible_ids)} athletic-eligible")
+
+            _progress(0.15, "step_team")
+            club_players = self._get_club_players(all_players)
+            if not club_players:
+                raise ValueError(f"No players found for club: {self.club_name}")
+            self.club_players = club_players
+            self._pred_cache: dict = {}
+
+            self._preloaded = True
+            _progress(0.45, "step_team_values")
+            return club_players
+
+        # No cache — compute everything from scratch
+        self._used_cache = False
+
         all_players = self._load_active_players(verbose=verbose)
         self.all_players = all_players
 
@@ -287,11 +323,7 @@ class TransferSimulator:
         """
         Load active players at season start using the data_loader pipeline.
 
-        Delegates to ``get_active_players_at_season_start`` which:
-          1. Loads ALL players (all seasons)
-          2. Assigns teams from transfers (last transfer <= 01/07)
-          3. Filters out Retired / Without Club / Career break
-          4. Updates market_value & age from valuations
+        Delegates to ``get_active_players_at_season_start``.
         """
         from simulator.data_loader import get_active_players_at_season_start
         return get_active_players_at_season_start(self.season, verbose=verbose)
@@ -908,48 +940,12 @@ class TransferSimulator:
                       f"{len(club_players)} in squad")
             _progress(0.40, "step_team_values")
         else:
-            # ── Step 1/8: Load data ──────────────────────────────────────
-            _progress(0.05, "step_loading")
-            if verbose:
-                print(f"Loading data for {self.season}...")
-
-            all_players = self._load_active_players(verbose=verbose)
-            self.all_players = all_players
-
-            if verbose:
-                print(f"  Loaded {len(all_players)} active players")
-
-            # ── Step 2/8: Identify club squad ────────────────────────────
-            _progress(0.20, "step_team")
-            club_players = self._get_club_players(all_players)
-
-            if not club_players:
-                raise ValueError(f"No players found for club: {self.club_name}")
-
-            if verbose:
-                print(f"  {self.club_name} has {len(club_players)} players")
-
-            # ── Step 3/8: Calculate team market values ───────────────────
-            _progress(0.35, "step_team_values")
-            self.team_market_values = self._calculate_team_market_values(all_players)
-
-            if verbose:
-                print(f"  Calculated market values for {len(self.team_market_values)} teams")
-
-            athletic_eligible_ids: Optional[set] = None
-            is_athletic = self._is_athletic_club()
-            athletic_in_market = any(
-                name.lower() in ATHLETIC_FAMILY_NAMES
-                for name in self.team_market_values
-            )
-            if is_athletic or athletic_in_market:
-                if verbose and is_athletic:
-                    print("  Athletic Bilbao detected – loading transfer history for eligibility filter...")
-                elif verbose:
-                    print("  Athletic family club(s) in market – loading transfer history for sell filter...")
-                athletic_eligible_ids = self._load_athletic_eligible_ids(verbose=verbose)
-                if verbose:
-                    print(f"  {len(athletic_eligible_ids)} players with Athletic family history found")
+            # Try preload_data (which uses cache if available)
+            self.preload_data(verbose=verbose, progress_callback=progress_callback)
+            all_players = self.all_players
+            club_players = self.club_players
+            athletic_eligible_ids = getattr(self, "_athletic_eligible_ids", None)
+            is_athletic = getattr(self, "_is_athletic", False)
 
         # ── Step 4/8: Sell players ───────────────────────────────────────
         _progress(0.50, "step_selling")
@@ -963,9 +959,10 @@ class TransferSimulator:
         elif sell_by_value_decline:
             if verbose:
                 print("  Predicting values for squad (sell-by-decline mode)...")
-            if pred_cache is None:
-                pred_cache = {}
-            club_players = self._predict_values(club_players, verbose=verbose, _cache=pred_cache)
+            if not getattr(self, "_used_cache", False):
+                if pred_cache is None:
+                    pred_cache = {}
+                club_players = self._predict_values(club_players, verbose=verbose, _cache=pred_cache)
             sold_players, formation_needed = self._sell_players_by_value_decline(
                 club_players,
                 athletic_eligible_ids=athletic_eligible_ids,
@@ -1022,9 +1019,10 @@ class TransferSimulator:
         if verbose:
             print(f"  {len(available_players)} players available for signing")
 
-        available_players = self._predict_values(
-            available_players, verbose=verbose, _cache=pred_cache
-        )
+        if not getattr(self, "_used_cache", False):
+            available_players = self._predict_values(
+                available_players, verbose=verbose, _cache=pred_cache
+            )
 
         # ── Apply signing approach ───────────────────────────────────────
         knapsack_players = available_players

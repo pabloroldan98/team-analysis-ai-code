@@ -33,6 +33,10 @@ from player import Player
 from transfer import Transfer
 from valuation import Valuation
 
+# Precomputed season cache (see scripts/precompute_active_players_cache.py)
+CACHE_DIR = DATA_DIR / "cache"
+CACHE_PREFIX = "season_data"
+
 
 @functools.lru_cache(maxsize=20000)
 def _parse_date_cached(date_str: str) -> Optional[datetime]:
@@ -510,14 +514,80 @@ def enrich_players_with_predictions(
     return players
 
 
+def load_season_cache(season: str, max_age_days: int = 1) -> Optional[dict]:
+    """
+    Load the precomputed season cache.
+
+    For ``"today"`` the file is ``season_data_today.json``; for historical
+    seasons it is ``season_data_{season}.json``.  For "today" the cache is
+    only considered fresh if ``computed_date`` is within *max_age_days* of
+    the current date.
+
+    Returns a dict with keys:
+        players          : List[Player]
+        team_market_values : Dict[str, float]
+        athletic_eligible_ids : Set[str]
+    or None when no cache exists / is stale / fails.
+    """
+    if season.lower() == "today":
+        cache_path = CACHE_DIR / f"{CACHE_PREFIX}_today.json"
+    else:
+        cache_path = CACHE_DIR / f"{CACHE_PREFIX}_{season}.json"
+
+    if not cache_path.exists():
+        return None
+
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    # Freshness check for "today"
+    if season.lower() == "today":
+        computed = raw.get("computed_date")
+        if computed:
+            try:
+                computed_dt = datetime.strptime(computed, "%Y-%m-%d")
+                delta = (datetime.now() - computed_dt).days
+                if delta > max_age_days:
+                    return None
+            except ValueError:
+                return None
+
+    players_raw = raw.get("players", [])
+    if not isinstance(players_raw, list):
+        return None
+
+    players = [Player.from_dict(p) for p in players_raw if isinstance(p, dict)]
+    team_market_values = raw.get("team_market_values", {})
+    athletic_ids = set(raw.get("athletic_eligible_ids", []))
+
+    return {
+        "players": players,
+        "team_market_values": team_market_values,
+        "athletic_eligible_ids": athletic_ids,
+    }
+
+
 def get_active_players_with_predictions(
     season: str,
     league: str = "all",
     model_path: Optional[Path] = None,
+    use_cache: bool = True,
 ) -> List[Player]:
     """
     Get active players at season start with ML-predicted values.
+
+    If use_cache is True and a precomputed season cache exists, loads
+    players (with predictions already set) from cache.
+    Otherwise computes on the fly.
     """
+    if use_cache:
+        cached = load_season_cache(season)
+        if cached is not None:
+            return cached["players"]
+
     players = get_active_players_at_season_start(season, league)
     if not players:
         return []
