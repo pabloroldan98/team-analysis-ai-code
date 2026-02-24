@@ -215,3 +215,7 @@ data/json/*
 !data/json/discovered_leagues.json
 
 ml/datasets/*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
