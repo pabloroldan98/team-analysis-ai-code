@@ -1,6 +1,7 @@
-import { useState } from "react";
-import type { Lang, Player, Club, BuyMode, Approach, BuyCounts } from "../types";
+import { useState, useEffect } from "react";
+import type { Lang, Player, Club, BuyMode, Approach, Objective, SimSpeed, BuyCounts, SellRecommendation, League, AdvancedFilters } from "../types";
 import { t, formatCurrency, POS_ORDER, POS_KEYS } from "../i18n";
+import { api } from "../api";
 
 /* ── helpers ────────────────────────────────────────────────────────────── */
 
@@ -15,7 +16,9 @@ function totalCombinations(total: number, maxPerPos = 3): number[][] {
   return combos;
 }
 
-const APPROACHES: Approach[] = ["max_value", "young_talents", "max_profit", "balanced"];
+const APPROACHES: Approach[] = ["max_value", "young_talents", "balanced"];
+const OBJECTIVES: Objective[] = ["smv", "net_benefit", "roi", "value_growth", "growth_pct"];
+const SIM_SPEEDS: SimSpeed[] = ["local", "fast", "standard"];
 
 /* ── sub-components ─────────────────────────────────────────────────────── */
 
@@ -54,6 +57,112 @@ function SeasonClubSelector({
             <option key={c.name} value={c.name}>{c.name}</option>
           ))}
         </select>
+      </div>
+    </div>
+  );
+}
+
+function SellRecommendationsPanel({
+  lang,
+  recommendations,
+  loading,
+  selected,
+  onToggle,
+  onSelectAll,
+}: {
+  lang: Lang;
+  recommendations: SellRecommendation[];
+  loading: boolean;
+  selected: string[];
+  onToggle: (id: string) => void;
+  onSelectAll: (ids: string[]) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"peak" | "decline">("peak");
+
+  if (loading) {
+    return (
+      <div className="text-xs text-gray-400 animate-pulse py-2">
+        {t(lang, "sell_rec_loading")}
+      </div>
+    );
+  }
+
+  if (!recommendations.length) return null;
+
+  const topDeclines = recommendations.slice(0, 5);
+  const items = activeTab === "peak" ? recommendations : topDeclines;
+  const selectableIds = items.map((r) => r.player_id);
+
+  return (
+    <div>
+      <h3 className="section-title">{t(lang, "sell_recommendations")}</h3>
+      <p className="text-xs text-gray-500 mb-3">{t(lang, "sell_rec_help")}</p>
+
+      <div className="flex gap-2 mb-3">
+        <button
+          onClick={() => setActiveTab("peak")}
+          className={`chip ${activeTab === "peak" ? "chip-active" : "chip-inactive"}`}
+        >
+          {t(lang, "sell_rec_peak")}
+        </button>
+        <button
+          onClick={() => setActiveTab("decline")}
+          className={`chip ${activeTab === "decline" ? "chip-active" : "chip-inactive"}`}
+        >
+          {t(lang, "sell_rec_decline")}
+        </button>
+      </div>
+
+      <p className="text-xs text-gray-500 mb-2">
+        {t(lang, activeTab === "peak" ? "sell_rec_peak_desc" : "sell_rec_decline_desc")}
+      </p>
+
+      <button
+        onClick={() => {
+          const newIds = selectableIds.filter((id) => !selected.includes(id));
+          if (newIds.length > 0) onSelectAll([...selected, ...newIds]);
+        }}
+        className="text-xs text-primary hover:text-primary-dark underline mb-2"
+      >
+        {t(lang, "sell_rec_select_all")}
+      </button>
+
+      <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+        {items.map((r, idx) => {
+          const isSelected = selected.includes(r.player_id);
+          const posKey = POS_KEYS[r.position] ?? "pos_def";
+          return (
+            <button
+              key={r.player_id}
+              onClick={() => onToggle(r.player_id)}
+              className={`w-full flex items-center justify-between text-left px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                isSelected
+                  ? "bg-red-50 border border-red-200"
+                  : "bg-gray-50 border border-transparent hover:bg-gray-100"
+              }`}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {activeTab === "decline" && (
+                  <span className="text-xs text-gray-400 font-mono w-4">{idx + 1}.</span>
+                )}
+                <span className={`font-medium truncate ${isSelected ? "text-red-700" : ""}`}>
+                  {r.name}
+                </span>
+                <span className="text-xs text-gray-400">
+                  {t(lang, posKey)}, {r.age ?? "?"}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0 ml-2">
+                <span className="text-xs text-gray-500">
+                  {formatCurrency(r.market_value)} → {formatCurrency(r.predicted_value)}
+                </span>
+                <span className="text-xs font-semibold text-red-600">
+                  ▼ {formatCurrency(r.decline)} ({(r.decline_pct * 100).toFixed(0)}%)
+                </span>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -276,6 +385,184 @@ function ApproachSelector({
   );
 }
 
+function ObjectiveSelector({
+  lang, objective, setObjective,
+}: {
+  lang: Lang; objective: Objective; setObjective: (o: Objective) => void;
+}) {
+  return (
+    <div>
+      <h3 className="section-title">{t(lang, "objective_title")}</h3>
+      <div className="flex flex-wrap gap-2 mb-2">
+        {OBJECTIVES.map((o) => (
+          <button
+            key={o}
+            onClick={() => setObjective(o)}
+            className={`chip ${objective === o ? "chip-active" : "chip-inactive"}`}
+          >
+            {t(lang, `objective_${o}`)}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-gray-500">{t(lang, `objective_${objective}_help`)}</p>
+    </div>
+  );
+}
+
+function SimSpeedSelector({
+  lang, speed, setSpeed,
+}: {
+  lang: Lang; speed: SimSpeed; setSpeed: (s: SimSpeed) => void;
+}) {
+  return (
+    <div>
+      <h3 className="section-title">{t(lang, "sim_speed_title")}</h3>
+      <div className="flex flex-wrap gap-2 mb-2">
+        {SIM_SPEEDS.map((s) => (
+          <button
+            key={s}
+            onClick={() => setSpeed(s)}
+            className={`chip ${speed === s ? "chip-active" : "chip-inactive"}`}
+          >
+            {t(lang, `sim_speed_${s}`)}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-gray-500">{t(lang, `sim_speed_${speed}_help`)}</p>
+    </div>
+  );
+}
+
+const HORIZONS = [1, 2, 3] as const;
+
+function AdvancedFiltersPanel({
+  lang,
+  leagues,
+  clubs,
+  filters,
+  setFilters,
+}: {
+  lang: Lang;
+  leagues: League[];
+  clubs: Club[];
+  filters: AdvancedFilters;
+  setFilters: (f: AdvancedFilters) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [bannedText, setBannedText] = useState("");
+
+  return (
+    <div className="border border-gray-200 rounded-lg">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg"
+      >
+        {t(lang, "filters_title")}
+        <span className="text-xs">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-4">
+          {/* League filter */}
+          <div>
+            <label className="block text-xs font-medium mb-1">{t(lang, "league_filter")}</label>
+            <p className="text-[10px] text-gray-400 mb-1">{t(lang, "league_filter_help")}</p>
+            <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+              {leagues.map((l) => {
+                const active = (filters.leagueFilter ?? []).includes(l.league_id);
+                return (
+                  <button
+                    key={l.league_id}
+                    onClick={() => {
+                      const current = filters.leagueFilter ?? [];
+                      const next = active
+                        ? current.filter((id) => id !== l.league_id)
+                        : [...current, l.league_id];
+                      setFilters({ ...filters, leagueFilter: next.length ? next : null });
+                    }}
+                    className={`chip text-xs ${active ? "chip-active" : "chip-inactive"}`}
+                  >
+                    {l.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Banned clubs */}
+          <div>
+            <label className="block text-xs font-medium mb-1">{t(lang, "banned_clubs")}</label>
+            <p className="text-[10px] text-gray-400 mb-1">{t(lang, "banned_clubs_help")}</p>
+            <input
+              type="text"
+              className="input-field text-sm"
+              placeholder={t(lang, "banned_clubs_placeholder")}
+              value={bannedText}
+              onChange={(e) => {
+                setBannedText(e.target.value);
+                const parts = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                setFilters({ ...filters, bannedClubs: parts.length ? parts : null });
+              }}
+            />
+          </div>
+
+          {/* Exclude top N */}
+          <div>
+            <label className="block text-xs font-medium mb-1">{t(lang, "exclude_top_n")}</label>
+            <p className="text-[10px] text-gray-400 mb-1">{t(lang, "exclude_top_n_help")}</p>
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={filters.excludeTopN}
+              onChange={(e) => setFilters({ ...filters, excludeTopN: Number(e.target.value) })}
+              className="input-field w-24"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {/* Min market value */}
+            <div>
+              <label className="block text-xs font-medium mb-1">
+                {t(lang, "min_market_value_title")}
+              </label>
+              <p className="text-[10px] text-gray-400 mb-1">{t(lang, "min_market_value_help")}</p>
+              <input
+                type="number"
+                min={0}
+                max={200}
+                step={0.5}
+                value={(filters.minMarketValue ?? 0) / 1_000_000}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setFilters({ ...filters, minMarketValue: v > 0 ? v * 1_000_000 : null });
+                }}
+                className="input-field w-24"
+              />
+            </div>
+
+            {/* Horizon */}
+            <div>
+              <label className="block text-xs font-medium mb-1">{t(lang, "horizon_title")}</label>
+              <p className="text-[10px] text-gray-400 mb-1">{t(lang, "horizon_help")}</p>
+              <div className="flex gap-2">
+                {HORIZONS.map((h) => (
+                  <button
+                    key={h}
+                    onClick={() => setFilters({ ...filters, horizon: h })}
+                    className={`chip ${filters.horizon === h ? "chip-active" : "chip-inactive"}`}
+                  >
+                    {t(lang, `horizon_${h}`)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── main export ────────────────────────────────────────────────────────── */
 
 export interface ConfigState {
@@ -286,6 +573,9 @@ export interface ConfigState {
   transferBudget: number;
   unlimited: boolean;
   approach: Approach;
+  objective: Objective;
+  simSpeed: SimSpeed;
+  filters: AdvancedFilters;
 }
 
 interface Props {
@@ -320,6 +610,36 @@ export default function ConfigPanel({
   const [budget, setBudget] = useState(0);
   const [unlimited, setUnlimited] = useState(false);
   const [approach, setApproach] = useState<Approach>("max_value");
+  const [objective, setObjective] = useState<Objective>("smv");
+  const [simSpeed, setSimSpeed] = useState<SimSpeed>("standard");
+  const [filters, setFilters] = useState<AdvancedFilters>({
+    leagueFilter: null,
+    bannedClubs: null,
+    excludeTopN: 0,
+    minMarketValue: null,
+    horizon: 1,
+  });
+  const [leagues, setLeagues] = useState<League[]>([]);
+  const [sellRecs, setSellRecs] = useState<SellRecommendation[]>([]);
+  const [loadingRecs, setLoadingRecs] = useState(false);
+
+  useEffect(() => {
+    if (!season) return;
+    api.getLeagues(season).then(setLeagues).catch(() => setLeagues([]));
+  }, [season]);
+
+  useEffect(() => {
+    if (!squad || !clubName || !season) {
+      setSellRecs([]);
+      return;
+    }
+    setLoadingRecs(true);
+    api
+      .getSellRecommendations(clubName, season)
+      .then((res) => setSellRecs(res.peak_players))
+      .catch(() => setSellRecs([]))
+      .finally(() => setLoadingRecs(false));
+  }, [squad, clubName, season]);
 
   const buildBuyCounts = (): BuyCounts | null => {
     if (buyMode === "exact") {
@@ -347,6 +667,9 @@ export default function ConfigPanel({
       transferBudget: budget,
       unlimited,
       approach,
+      objective,
+      simSpeed,
+      filters,
     });
   };
 
@@ -376,6 +699,19 @@ export default function ConfigPanel({
             {t(lang, "data_loaded")} — {t(lang, "squad_loaded", { count: squad.length })}
           </div>
 
+          <SellRecommendationsPanel
+            lang={lang}
+            recommendations={sellRecs}
+            loading={loadingRecs}
+            selected={playersToSell}
+            onToggle={(id) =>
+              setPlayersToSell((prev) =>
+                prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+              )
+            }
+            onSelectAll={setPlayersToSell}
+          />
+
           <SellSelection
             lang={lang} squad={squad}
             selected={playersToSell} onChange={setPlayersToSell}
@@ -396,6 +732,22 @@ export default function ConfigPanel({
 
           <ApproachSelector
             lang={lang} approach={approach} setApproach={setApproach}
+          />
+
+          <ObjectiveSelector
+            lang={lang} objective={objective} setObjective={setObjective}
+          />
+
+          <SimSpeedSelector
+            lang={lang} speed={simSpeed} setSpeed={setSimSpeed}
+          />
+
+          <AdvancedFiltersPanel
+            lang={lang}
+            leagues={leagues}
+            clubs={clubs}
+            filters={filters}
+            setFilters={setFilters}
           />
 
           <button

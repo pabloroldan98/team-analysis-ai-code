@@ -1,4 +1,4 @@
-import type { Club, Player, SimulationResult, BuyCounts, Approach } from "./types";
+import type { Club, Player, SimulationResult, BuyCounts, Approach, Objective, SimSpeed, SellRecommendations, League, AdvancedFilters, Analytics, SearchResults } from "./types";
 
 const BASE = "";
 
@@ -22,12 +22,20 @@ export const api = {
   getClubs: (season: string) =>
     json<Club[]>(`/api/clubs?season=${encodeURIComponent(season)}`),
 
+  getLeagues: (season: string) =>
+    json<League[]>(`/api/leagues?season=${encodeURIComponent(season)}`),
+
   loadSquad: (clubName: string, season: string) =>
     json<Player[]>("/api/load-squad", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ club_name: clubName, season }),
     }),
+
+  getSellRecommendations: (clubName: string, season: string) =>
+    json<SellRecommendations>(
+      `/api/sell-recommendations?club_name=${encodeURIComponent(clubName)}&season=${encodeURIComponent(season)}`
+    ),
 
   /** Synchronous simulate (no progress). */
   simulate: (params: {
@@ -38,6 +46,9 @@ export const api = {
     playersToSell: string[];
     buyCounts: BuyCounts | null;
     approach: Approach;
+    objective: Objective;
+    simSpeed: SimSpeed;
+    filters: AdvancedFilters;
   }) =>
     json<SimulationResult>("/api/simulate", {
       method: "POST",
@@ -50,6 +61,13 @@ export const api = {
         players_to_sell: params.playersToSell,
         buy_counts: params.buyCounts,
         approach: params.approach,
+        objective: params.objective,
+        sim_speed: params.simSpeed,
+        league_filter: params.filters.leagueFilter,
+        banned_clubs: params.filters.bannedClubs,
+        exclude_top_n: params.filters.excludeTopN,
+        min_market_value: params.filters.minMarketValue,
+        horizon: params.filters.horizon,
       }),
     }),
 
@@ -66,6 +84,9 @@ export const api = {
       playersToSell: string[];
       buyCounts: BuyCounts | null;
       approach: Approach;
+      objective: Objective;
+      simSpeed: SimSpeed;
+      filters: AdvancedFilters;
     },
     onProgress: (ev: ProgressEvent) => void,
   ): Promise<SimulationResult> => {
@@ -80,6 +101,13 @@ export const api = {
         players_to_sell: params.playersToSell,
         buy_counts: params.buyCounts,
         approach: params.approach,
+        objective: params.objective,
+        sim_speed: params.simSpeed,
+        league_filter: params.filters.leagueFilter,
+        banned_clubs: params.filters.bannedClubs,
+        exclude_top_n: params.filters.excludeTopN,
+        min_market_value: params.filters.minMarketValue,
+        horizon: params.filters.horizon,
       }),
     });
 
@@ -119,6 +147,28 @@ export const api = {
     if (!result) throw new Error("No result received from stream");
     return result;
   },
+
+  searchPlayers: (params: {
+    q?: string; season?: string; position?: string;
+    minValue?: number; maxValue?: number;
+    minAge?: number; maxAge?: number; limit?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params.q) sp.set("q", params.q);
+    if (params.season) sp.set("season", params.season);
+    if (params.position) sp.set("position", params.position);
+    if (params.minValue) sp.set("min_value", String(params.minValue));
+    if (params.maxValue) sp.set("max_value", String(params.maxValue));
+    if (params.minAge) sp.set("min_age", String(params.minAge));
+    if (params.maxAge) sp.set("max_age", String(params.maxAge));
+    sp.set("limit", String(params.limit ?? 50));
+    return json<SearchResults>(`/api/search-players?${sp.toString()}`);
+  },
+
+  getAnalytics: (clubName: string, season: string) =>
+    json<Analytics>(
+      `/api/analytics?club_name=${encodeURIComponent(clubName)}&season=${encodeURIComponent(season)}`
+    ),
 
   aiSummary: (apiKey: string, language: string) =>
     json<{ summary: string }>("/api/ai-summary", {

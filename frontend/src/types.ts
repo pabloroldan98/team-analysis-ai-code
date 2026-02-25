@@ -45,10 +45,97 @@ export interface SimulationResult {
   total_predicted_value: number;
 }
 
+export interface SellRecommendation {
+  player_id: string;
+  name: string;
+  position: string;
+  age: number | null;
+  market_value: number;
+  predicted_value: number;
+  decline: number;
+  decline_pct: number;
+  img_url: string;
+}
+
+export interface SellRecommendations {
+  peak_players: SellRecommendation[];
+}
+
 export type BuyMode = "exact" | "range" | "total";
-export type Approach = "max_value" | "young_talents" | "max_profit" | "balanced";
+export type Approach = "max_value" | "young_talents" | "balanced";
+export type Objective = "smv" | "net_benefit" | "roi" | "value_growth" | "growth_pct";
+export type SimSpeed = "local" | "fast" | "standard";
 
 export interface BuyCounts {
   [key: string]: [number, number] | number[][] | undefined;
   _formations?: number[][];
+}
+
+export interface League {
+  league_id: string;
+  name: string;
+  country: string;
+}
+
+export interface AdvancedFilters {
+  leagueFilter: string[] | null;
+  bannedClubs: string[] | null;
+  excludeTopN: number;
+  minMarketValue: number | null;
+  horizon: number;
+}
+
+export interface XGrowthPlayer {
+  player_id: string;
+  name: string;
+  position: string;
+  age: number | null;
+  team: string;
+  market_value: number;
+  predicted_value: number;
+  xgrowth: number;
+  fair_price: number;
+  img_url: string;
+}
+
+export interface SimilarPlayer extends XGrowthPlayer {
+  similarity: number;
+}
+
+export interface PlayerAnalysis {
+  player_id: string;
+  name: string;
+  position: string;
+  age: number | null;
+  team: string;
+  market_value: number;
+  predicted_value: number;
+  xgrowth: number;
+  fair_price: number;
+  similar_players: SimilarPlayer[];
+  img_url: string;
+}
+
+export interface Analytics {
+  xgrowth_ranking: XGrowthPlayer[];
+  signing_analysis: PlayerAnalysis[];
+}
+
+export interface SearchPlayer {
+  player_id: string;
+  name: string;
+  position: string;
+  age: number | null;
+  team: string;
+  nationality: string;
+  market_value: number;
+  predicted_value: number | null;
+  xgrowth: number | null;
+  fair_price: number | null;
+  img_url: string;
+}
+
+export interface SearchResults {
+  players: SearchPlayer[];
+  total: number;
 }

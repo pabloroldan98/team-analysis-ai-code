@@ -6,6 +6,7 @@ import Header from "./components/Header";
 import Footer from "./components/Footer";
 import ConfigPanel, { type ConfigState } from "./components/ConfigPanel";
 import ResultsPanel from "./components/ResultsPanel";
+import PlayerSearch from "./components/PlayerSearch";
 
 /* ── Loading Overlay (pattern from knapsack_football_formations) ────────── */
 
@@ -114,6 +115,9 @@ export default function App() {
           playersToSell: cfg.playersToSell,
           buyCounts: cfg.buyCounts,
           approach: cfg.approach,
+          objective: cfg.objective,
+          simSpeed: cfg.simSpeed,
+          filters: cfg.filters,
         },
         (ev) => {
           setProgressPct(ev.percent);
@@ -158,6 +162,8 @@ export default function App() {
           season={season}
           clubName={clubName}
         />
+
+        {squad && <PlayerSearch lang={lang} season={season} />}
 
         {error && (
           <div className="bg-danger-light border border-danger text-danger-dark text-sm p-3 rounded-lg">
