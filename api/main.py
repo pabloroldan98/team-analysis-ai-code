@@ -197,9 +197,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Static assets mount — added at the bottom of the file to avoid
+# conflicting with frontend/dist when the React build is present.
 ASSETS_DIR = ROOT_DIR / "assets"
-if ASSETS_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 # In-memory cache for preloaded simulators
 _sim_cache: Dict[str, Any] = {}
@@ -738,7 +738,9 @@ def ai_summary(req: AISummaryRequest) -> Dict[str, str]:
     return {"summary": summary}
 
 
-# Serve compiled frontend (production)
+# Serve compiled frontend (production) or fall back to root assets
 _FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 if _FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+elif ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
