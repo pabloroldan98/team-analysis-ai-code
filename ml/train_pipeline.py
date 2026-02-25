@@ -55,7 +55,7 @@ from ml.feature_engineering import (
     filter_dataset_for_season,
     get_samples_for_season,
 )
-from ml.value_predictor import ValuePredictor, MODELS_DIR
+from ml.value_predictor import ValuePredictor, MODELS_DIR, SEGMENT_THRESHOLDS, _segment_for_value
 from valuation import Valuation
 from player import Player
 from scraping.utils.helpers import DATA_DIR, list_json_bases, load_json
@@ -444,6 +444,66 @@ def train_model(
     return model_path
 
 
+def train_segmented_models(
+    season: str,
+    full_dataset: List[PlayerFeatures],
+    verbose: bool = True,
+    test_years: int = 1,
+    **xgb_params,
+) -> Dict[str, Path]:
+    """
+    Train 4 segment-specific models by value range.
+
+    Segments: <1M, 1M-10M, 10M-100M, >=100M.
+    Each model is trained only on players in its value range, producing
+    better predictions especially at extreme values.
+
+    Returns dict of segment_name -> model_path.
+    """
+    training_data = filter_dataset_for_season(full_dataset, season)
+    if len(training_data) < 100:
+        raise ValueError(f"Insufficient training data ({len(training_data)} samples)")
+
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    saved: Dict[str, Path] = {}
+
+    for seg_name, lo, hi in SEGMENT_THRESHOLDS:
+        seg_data = [f for f in training_data if lo <= f.current_value < hi]
+        if len(seg_data) < 50:
+            if verbose:
+                print(f"  Segment {seg_name}: only {len(seg_data)} samples — skipping (will use global fallback)")
+            continue
+
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"Training segment: {seg_name}  ({len(seg_data)} samples)")
+            print(f"{'='*60}")
+
+        predictor = ValuePredictor()
+        try:
+            predictor.train(seg_data, test_years=test_years, verbose=verbose, **xgb_params)
+        except ValueError as e:
+            if verbose:
+                print(f"  Segment {seg_name} failed: {e} — skipping")
+            continue
+
+        model_path = MODELS_DIR / f"value_model_{season}_{seg_name}.joblib"
+        predictor.save(model_path)
+        saved[seg_name] = model_path
+
+        metrics_path = model_path.with_suffix(".json")
+        eval_data = [f for f in get_samples_for_season(full_dataset, season) if lo <= f.current_value < hi]
+        eval_metrics = _evaluate_predictions(predictor, eval_data, f"{season} [{seg_name}]", verbose)
+        eval_metrics["segment"] = seg_name
+        with open(metrics_path, "w") as f:
+            json.dump(eval_metrics, f, indent=2)
+
+        if verbose:
+            print(f"  Saved: {model_path}")
+
+    return saved
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -519,6 +579,11 @@ def main():
         default=1,
         help="Parallel workers for dataset building (e.g., 4 for 4 cores). Default: 1",
     )
+    parser.add_argument(
+        "--segmented",
+        action="store_true",
+        help="Also train 4 segment-specific models by value range (<1M, 1M-10M, 10M-100M, >=100M)",
+    )
     
     args = parser.parse_args()
     
@@ -553,6 +618,27 @@ def main():
             learning_rate=args.learning_rate,
         )
         
+        if args.segmented:
+            if not args.quiet:
+                print(f"\n{'='*60}")
+                print(f"Training segmented models for {season}")
+                print(f"{'='*60}")
+            ds = load_training_dataset(cutoff_months=args.cutoff_months)
+            if ds is None:
+                ds = []
+            seg_paths = train_segmented_models(
+                season=season,
+                full_dataset=ds,
+                verbose=not args.quiet,
+                test_years=args.test_years,
+                n_estimators=args.n_estimators,
+                max_depth=args.max_depth,
+                learning_rate=args.learning_rate,
+            )
+            if not args.quiet:
+                for sn, sp in seg_paths.items():
+                    print(f"  {sn}: {sp}")
+
         if not args.quiet:
             print(f"\n{'='*60}")
             print(f"Training complete!")

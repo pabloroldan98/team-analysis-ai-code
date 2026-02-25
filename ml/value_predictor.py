@@ -37,75 +37,39 @@ class ValuePredictor:
     Predicts what a player's market value will be in 1 year.
     """
     
-    # Feature names (must match to_feature_dict order; categorical handled by XGBoost enable_categorical)
     FEATURE_NAMES = [
-        "current_value_M",
-        "age",
-        "position",  # Categorical
-        "player_nationality_bin",  # Categorical
-        "current_club_bin",  # Categorical
-        "current_league",  # Categorical
-        "league_tier",  # Categorical
-        "current_club_value_M",
-        "is_in_top_league",
-        "is_in_home_league",
+        "current_value_M", "age",
+        "position", "player_nationality_bin", "current_club_bin",
+        "current_league", "league_tier",
+        "current_club_value_M", "is_in_top_league", "is_in_home_league",
         "valuation_year",
-        "max_value_M",
-        "min_value_M",
-        "avg_value_M",
-        "value_6m_ago_M",
-        "value_1y_ago_M",
-        "value_2y_ago_M",
-        "value_3y_ago_M",
-        "value_4y_ago_M",
-        "value_5y_ago_M",
-        "trend_6m",
-        "trend_1y",
-        "trend_2y",
-        "trend_4y",
-        "trend_5y",
-        "pct_6m",
-        "pct_1y",
-        "pct_2y",
-        "pct_4y",
-        "pct_5y",
-        "diff_6m_M",
-        "diff_1y_M",
-        "diff_2y_M",
-        "diff_4y_M",
-        "diff_5y_M",
-        "months_since_peak",
-        "num_valuations",
-        "months_of_history",
+        "max_value_M", "min_value_M", "avg_value_M",
+        "value_6m_ago_M", "value_1y_ago_M", "value_2y_ago_M",
+        "value_3y_ago_M", "value_4y_ago_M", "value_5y_ago_M",
+        "trend_6m", "trend_1y", "trend_2y", "trend_4y", "trend_5y",
+        "pct_6m", "pct_1y", "pct_2y", "pct_4y", "pct_5y",
+        "diff_6m_M", "diff_1y_M", "diff_2y_M", "diff_4y_M", "diff_5y_M",
+        "months_since_peak", "num_valuations", "months_of_history",
         "current_value_percentile",
-        "value_6m_ago_percentile",
-        "value_1y_ago_percentile",
-        "value_2y_ago_percentile",
-        "value_3y_ago_percentile",
-        "value_4y_ago_percentile",
-        "value_5y_ago_percentile",
-        "diff_percentile_6m",
-        "diff_percentile_1y",
-        "diff_percentile_2y",
-        "diff_percentile_3y",
-        "diff_percentile_4y",
-        "diff_percentile_5y",
-        "trend_percentile_6m",
-        "trend_percentile_1y",
-        "trend_percentile_2y",
-        "trend_percentile_3y",
-        "trend_percentile_4y",
-        "trend_percentile_5y",
-        "pct_percentile_6m",
-        "pct_percentile_1y",
-        "pct_percentile_2y",
-        "pct_percentile_3y",
-        "pct_percentile_4y",
-        "pct_percentile_5y",
+        "value_6m_ago_percentile", "value_1y_ago_percentile",
+        "value_2y_ago_percentile", "value_3y_ago_percentile",
+        "value_4y_ago_percentile", "value_5y_ago_percentile",
+        "diff_percentile_6m", "diff_percentile_1y", "diff_percentile_2y",
+        "diff_percentile_3y", "diff_percentile_4y", "diff_percentile_5y",
+        "trend_percentile_6m", "trend_percentile_1y", "trend_percentile_2y",
+        "trend_percentile_3y", "trend_percentile_4y", "trend_percentile_5y",
+        "pct_percentile_6m", "pct_percentile_1y", "pct_percentile_2y",
+        "pct_percentile_3y", "pct_percentile_4y", "pct_percentile_5y",
+        # v2 extended features
+        "height", "preferred_foot", "num_positions",
+        "value_volatility", "value_acceleration", "peak_ratio",
+        "age_value_ratio", "log_current_value",
     ]
     
-    # Categorical feature names for XGBoost
-    CATEGORICAL_FEATURES = ["position", "player_nationality_bin", "current_club_bin", "current_league", "league_tier"]
+    CATEGORICAL_FEATURES = [
+        "position", "player_nationality_bin", "current_club_bin",
+        "current_league", "league_tier", "preferred_foot",
+    ]
 
     # Fallback allowed values when model has no category mappings (old models).
     # Any value not in these sets is mapped to "Other" to avoid XGBoost "category not in training set" errors.
@@ -129,6 +93,7 @@ class ValuePredictor:
             "laliga", "premier", "seriea", "bundesliga", "ligue1", "Other",
         },
         "league_tier": {"1", "Other"},
+        "preferred_foot": {"Left", "Right", "Both", "Unknown"},
     }
     
     def __init__(self, model_path: Optional[Path] = None):
@@ -368,6 +333,14 @@ class ValuePredictor:
             raise RuntimeError("Model not trained. Call train() or load() first.")
         
         X = pd.DataFrame([features.to_feature_dict()])
+
+        model_features = getattr(self.model, "feature_names_in_", None)
+        if model_features is not None:
+            missing = [c for c in model_features if c not in X.columns]
+            for c in missing:
+                X[c] = 0.0
+            X = X[[c for c in model_features if c in X.columns]]
+
         X = self._coerce_categories_for_prediction(X)
         for col in self.CATEGORICAL_FEATURES:
             if col in X.columns:
@@ -375,11 +348,14 @@ class ValuePredictor:
         
         pred_millions = self.model.predict(X)[0]
         
-        return max(0, pred_millions * 1_000_000)  # Convert back to euros
+        return max(0, pred_millions * 1_000_000)
     
     def predict_batch(self, features_list: List[PlayerFeatures]) -> List[float]:
         """
         Predict future values for multiple players.
+        
+        Automatically filters features to match what the loaded model expects
+        (backward compatible with v1 models that lack v2 features).
         
         Args:
             features_list: List of PlayerFeatures
@@ -396,6 +372,14 @@ class ValuePredictor:
             return []
         
         X = pd.DataFrame([f.to_feature_dict() for f in features_list])
+
+        model_features = getattr(self.model, "feature_names_in_", None)
+        if model_features is not None:
+            missing = [c for c in model_features if c not in X.columns]
+            for c in missing:
+                X[c] = 0.0
+            X = X[[c for c in model_features if c in X.columns]]
+
         X = self._coerce_categories_for_prediction(X)
         for col in self.CATEGORICAL_FEATURES:
             if col in X.columns:
@@ -492,10 +476,129 @@ class ValuePredictor:
         return max(models, key=lambda p: p.stat().st_mtime)
 
 
+MAX_ANNUAL_GROWTH = {
+    "under_1M": 10.0,     # can 10x (youth breakout)
+    "1M_10M": 5.0,        # can 5x
+    "10M_100M": 3.0,      # can 3x
+    "over_100M": 2.0,     # can 2x at most
+}
+MAX_ANNUAL_DECLINE = 0.10  # floor: never predict < 10% of current value
+
+
+def clamp_prediction(pred: float, current_value: float) -> float:
+    """Clamp prediction to avoid anomalous values based on value segment."""
+    if current_value <= 0:
+        return max(pred, 0)
+    seg = _segment_for_value(current_value)
+    max_growth = MAX_ANNUAL_GROWTH.get(seg, 3.0)
+    ceiling = current_value * max_growth
+    floor = current_value * MAX_ANNUAL_DECLINE
+    return max(floor, min(pred, ceiling))
+
+
+SEGMENT_THRESHOLDS = [
+    ("under_1M", 0, 1_000_000),
+    ("1M_10M", 1_000_000, 10_000_000),
+    ("10M_100M", 10_000_000, 100_000_000),
+    ("over_100M", 100_000_000, float("inf")),
+]
+
+BLEND_ZONE = 0.15
+
+
+def _segment_for_value(value: float) -> str:
+    """Return segment name for a given market value."""
+    for name, lo, hi in SEGMENT_THRESHOLDS:
+        if lo <= value < hi:
+            return name
+    return SEGMENT_THRESHOLDS[-1][0]
+
+
+class SegmentedValuePredictor:
+    """
+    Ensemble of 4 segment-specific ValuePredictor models.
+
+    Routes each player to the model trained on their value range.
+    At segment boundaries a soft blend (weighted average) avoids discontinuities.
+    Falls back to the global model when a segment model is missing.
+    """
+
+    def __init__(self, season: str, models_dir: Optional[Path] = None):
+        self.season = season
+        self.models_dir = models_dir or MODELS_DIR
+        self.global_model: Optional[ValuePredictor] = None
+        self.segment_models: Dict[str, ValuePredictor] = {}
+        self._load(season)
+
+    def _load(self, season: str) -> None:
+        global_path = self.models_dir / f"value_model_{season}.joblib"
+        if global_path.exists():
+            self.global_model = ValuePredictor(global_path)
+
+        for seg_name, _, _ in SEGMENT_THRESHOLDS:
+            seg_path = self.models_dir / f"value_model_{season}_{seg_name}.joblib"
+            if seg_path.exists():
+                self.segment_models[seg_name] = ValuePredictor(seg_path)
+
+    @property
+    def is_trained(self) -> bool:
+        return bool(self.segment_models) or (self.global_model is not None and self.global_model.is_trained)
+
+    def _get_model(self, segment: str) -> ValuePredictor:
+        return self.segment_models.get(segment) or self.global_model
+
+    def predict_batch(self, features_list: List[PlayerFeatures]) -> List[float]:
+        """Predict with segment routing, boundary blending and anomaly clamping."""
+        if not features_list:
+            return []
+        if not self.segment_models:
+            if self.global_model and self.global_model.is_trained:
+                raw = self.global_model.predict_batch(features_list)
+                return [clamp_prediction(p, f.current_value) for p, f in zip(raw, features_list)]
+            raise RuntimeError("No models loaded")
+
+        results = [0.0] * len(features_list)
+        seg_indices: Dict[str, List[int]] = {s: [] for s, _, _ in SEGMENT_THRESHOLDS}
+
+        for i, f in enumerate(features_list):
+            seg_indices[_segment_for_value(f.current_value)].append(i)
+
+        for seg_name, indices in seg_indices.items():
+            if not indices:
+                continue
+            model = self._get_model(seg_name)
+            if model is None:
+                continue
+            seg_features = [features_list[i] for i in indices]
+            preds = model.predict_batch(seg_features)
+            for idx, pred in zip(indices, preds):
+                results[idx] = pred
+
+        for i, f in enumerate(features_list):
+            val = f.current_value
+            for j, (_, lo, hi) in enumerate(SEGMENT_THRESHOLDS[:-1]):
+                boundary = hi
+                zone = boundary * BLEND_ZONE
+                if abs(val - boundary) < zone:
+                    lo_seg = SEGMENT_THRESHOLDS[j][0]
+                    hi_seg = SEGMENT_THRESHOLDS[j + 1][0]
+                    m_lo = self._get_model(lo_seg)
+                    m_hi = self._get_model(hi_seg)
+                    if m_lo and m_hi and m_lo is not m_hi:
+                        p_lo = m_lo.predict(f)
+                        p_hi = m_hi.predict(f)
+                        alpha = (val - (boundary - zone)) / (2 * zone)
+                        alpha = max(0.0, min(1.0, alpha))
+                        results[i] = (1 - alpha) * p_lo + alpha * p_hi
+                    break
+
+        return [clamp_prediction(p, f.current_value) for p, f in zip(results, features_list)]
+
+
 def predict_player_values(
     valuations: List[Valuation],
     cutoff_date: datetime,
-    model: ValuePredictor,
+    model,
     players: Optional[Dict[str, Player]] = None,
 ) -> Dict[str, float]:
     """
@@ -504,13 +607,12 @@ def predict_player_values(
     Args:
         valuations: All valuations up to cutoff_date
         cutoff_date: Current date for prediction
-        model: Trained ValuePredictor
+        model: Trained ValuePredictor or SegmentedValuePredictor
         players: Optional player info dict
     
     Returns:
         Dict mapping player_id to predicted value (euros)
     """
-    # Build prediction dataset
     features_list = build_prediction_dataset(
         valuations,
         cutoff_date,
@@ -520,10 +622,8 @@ def predict_player_values(
     if not features_list:
         return {}
     
-    # Predict
     predictions = model.predict_batch(features_list)
     
-    # Map to player IDs
     return {
         f.player_id: pred
         for f, pred in zip(features_list, predictions)

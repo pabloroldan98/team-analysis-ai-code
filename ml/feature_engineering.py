@@ -162,6 +162,16 @@ class PlayerFeatures:
     pct_percentile_4y: float = 0.0
     pct_percentile_5y: float = 0.0
     
+    # Extended features (v2 – backward-compatible, defaults let old datasets load)
+    height: float = 0.0  # cm (0 = unknown)
+    preferred_foot: str = "Unknown"  # Left / Right / Both / Unknown (categorical)
+    num_positions: int = 1  # positional versatility (1 = specialist)
+    value_volatility: float = 0.0  # std(recent_values) / mean(recent_values)
+    value_acceleration: float = 0.0  # trend_6m − trend_1y (change of trend)
+    peak_ratio: float = 1.0  # current_value / max_value (1 = at peak)
+    age_value_ratio: float = 0.0  # current_value / (age²) – captures prime-curve
+    log_current_value: float = 0.0  # log₁₀(1 + current_value) – scale-invariant
+
     # Training metadata
     cutoff_season: str = ""  # Season of the cutoff (e.g., "2022-2023") for filtering
     
@@ -253,6 +263,14 @@ class PlayerFeatures:
             "pct_percentile_3y": self._json_float(self.pct_percentile_3y),
             "pct_percentile_4y": self._json_float(self.pct_percentile_4y),
             "pct_percentile_5y": self._json_float(self.pct_percentile_5y),
+            "height": self.height,
+            "preferred_foot": self.preferred_foot,
+            "num_positions": self.num_positions,
+            "value_volatility": self.value_volatility,
+            "value_acceleration": self.value_acceleration,
+            "peak_ratio": self.peak_ratio,
+            "age_value_ratio": self.age_value_ratio,
+            "log_current_value": self.log_current_value,
             "cutoff_season": self.cutoff_season,
             "target_value": self.target_value,
         }
@@ -330,6 +348,15 @@ class PlayerFeatures:
             "pct_percentile_3y": self._safe_float(self.pct_percentile_3y),
             "pct_percentile_4y": self._safe_float(self.pct_percentile_4y),
             "pct_percentile_5y": self._safe_float(self.pct_percentile_5y),
+            # v2 extended features
+            "height": float(self.height) if self.height else 0.0,
+            "preferred_foot": self.preferred_foot,  # Categorical
+            "num_positions": float(self.num_positions),
+            "value_volatility": float(self.value_volatility),
+            "value_acceleration": float(self.value_acceleration),
+            "peak_ratio": float(self.peak_ratio),
+            "age_value_ratio": float(self.age_value_ratio),
+            "log_current_value": float(self.log_current_value),
         }
 
 
@@ -956,6 +983,26 @@ def extract_player_features(
     first_date = parsed[0][0]
     months_of_history = int((cutoff_date - first_date).days / 30)
     
+    # Extended features (v2)
+    height_val = float(player_info.height) if player_info and player_info.height else 0.0
+    foot = (player_info.preferred_foot or "Unknown") if player_info else "Unknown"
+    if foot not in ("Left", "Right", "Both"):
+        foot = "Unknown"
+    num_pos = 1
+    if player_info:
+        num_pos = 1 + len(player_info.other_positions or [])
+
+    recent_values = values[-min(6, len(values)):]
+    val_mean = sum(recent_values) / len(recent_values) if recent_values else 1.0
+    val_std = (sum((v - val_mean) ** 2 for v in recent_values) / len(recent_values)) ** 0.5 if len(recent_values) > 1 else 0.0
+    value_volatility = val_std / max(val_mean, 1.0)
+
+    value_acceleration = trend_6m - trend_1y
+    peak_ratio = current_value / max(max_value, 1.0)
+    age_sq = max(age, 1.0) ** 2
+    age_value_ratio = (current_value / 1_000_000) / (age_sq / 100.0) if age_sq > 0 else 0.0
+    log_current_value = float(np.log10(max(current_value, 1.0)))
+
     # Target value (1 year after cutoff, or latest if not available)
     target_value = None
     if include_target and future_vals:
@@ -1008,6 +1055,14 @@ def extract_player_features(
         months_since_peak=months_since_peak,
         num_valuations=num_valuations,
         months_of_history=months_of_history,
+        height=height_val,
+        preferred_foot=foot,
+        num_positions=num_pos,
+        value_volatility=value_volatility,
+        value_acceleration=value_acceleration,
+        peak_ratio=peak_ratio,
+        age_value_ratio=age_value_ratio,
+        log_current_value=log_current_value,
         cutoff_season=cutoff_season,
         target_value=target_value,
     )
@@ -1463,6 +1518,14 @@ def load_training_dataset(cutoff_months: int = 12) -> Optional[List[PlayerFeatur
             pct_percentile_3y=_load_float(item.get("pct_percentile_3y"), 0.0),
             pct_percentile_4y=_load_float(item.get("pct_percentile_4y"), 0.0),
             pct_percentile_5y=_load_float(item.get("pct_percentile_5y"), 0.0),
+            height=_load_float(item.get("height"), 0.0),
+            preferred_foot=item.get("preferred_foot", "Unknown"),
+            num_positions=int(item.get("num_positions", 1)),
+            value_volatility=_load_float(item.get("value_volatility"), 0.0),
+            value_acceleration=_load_float(item.get("value_acceleration"), 0.0),
+            peak_ratio=_load_float(item.get("peak_ratio"), 1.0),
+            age_value_ratio=_load_float(item.get("age_value_ratio"), 0.0),
+            log_current_value=_load_float(item.get("log_current_value"), 0.0),
             cutoff_season=item.get("cutoff_season", ""),
             target_value=item.get("target_value"),
         )
