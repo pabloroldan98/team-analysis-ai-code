@@ -271,14 +271,112 @@ def _squad_label(p, lang: str) -> str:
 
 
 # =============================================================================
-# STEP 3 – SELECT PLAYERS TO SELL
+# STEP 3 – SELECT PLAYERS TO SELL  (recommendations + manual selection)
 # =============================================================================
 
+def _compute_sell_recommendations(squad) -> dict:
+    """Analyse the squad and return sale recommendations.
+
+    Returns dict with:
+        peak_players:    list of players whose predicted_value < market_value
+                         (have peaked, expected to decline), sorted by absolute
+                         decline descending.
+        decline_players: same list as peak_players but may include near-zero
+                         deltas that are still negative.  Kept separate so the
+                         UI can present two tabs.
+    """
+    peak = []
+    for p in squad:
+        mv = p.market_value or 0
+        pv = getattr(p, "predicted_value", None)
+        if pv is None or mv <= 0:
+            continue
+        if p.on_loan:
+            continue
+        delta = mv - pv  # positive means decline
+        if delta > 0:
+            peak.append((p, delta, delta / mv))
+    peak.sort(key=lambda t: t[1], reverse=True)
+    return {
+        "peak_players": peak,
+    }
+
+
+def _render_sell_recommendations(lang: str, squad) -> set:
+    """Render the sale-recommendation panel.  Returns set of player_ids
+    that the user chose to auto-select from the recommendations."""
+    recs = _compute_sell_recommendations(squad)
+    peak = recs["peak_players"]
+
+    auto_ids: set = set()
+
+    st.subheader(t(lang, "sell_recommendations"))
+    st.caption(t(lang, "sell_rec_help"))
+
+    # ── Tab 1: peak ──────────────────────────────────────────────────────
+    tab_peak, tab_decline = st.tabs([
+        t(lang, "sell_rec_peak"),
+        t(lang, "sell_rec_decline"),
+    ])
+
+    with tab_peak:
+        st.caption(t(lang, "sell_rec_peak_desc"))
+        if not peak:
+            st.info(t(lang, "sell_rec_no_peak"))
+        else:
+            if st.button(t(lang, "sell_rec_select_all_peak"), key="btn_peak"):
+                for p, _, _ in peak:
+                    auto_ids.add(p.player_id)
+
+            for p, delta, pct in peak:
+                pos = t(lang, POS_KEYS.get(p.position, "pos_def"))
+                mv = format_currency(p.market_value)
+                pv = format_currency(p.predicted_value)
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(
+                        f"**{p.name}** ({pos}, {p.age or '?'}) · {mv} → {pv}"
+                    )
+                with col2:
+                    st.markdown(
+                        f"<span style='color:#cc0000'>▼ {format_currency(delta)} "
+                        f"({pct:.0%})</span>",
+                        unsafe_allow_html=True,
+                    )
+
+    # ── Tab 2: decline (top 5 biggest drops) ─────────────────────────────
+    with tab_decline:
+        st.caption(t(lang, "sell_rec_decline_desc"))
+        top_n = peak[:5]
+        if not top_n:
+            st.info(t(lang, "sell_rec_no_decline"))
+        else:
+            if st.button(t(lang, "sell_rec_select_all_decline"), key="btn_decline"):
+                for p, _, _ in top_n:
+                    auto_ids.add(p.player_id)
+
+            for rank, (p, delta, pct) in enumerate(top_n, 1):
+                pos = t(lang, POS_KEYS.get(p.position, "pos_def"))
+                mv = format_currency(p.market_value)
+                pv = format_currency(p.predicted_value)
+                st.markdown(
+                    f"**{rank}.** {p.name} ({pos}, {p.age or '?'}) · {mv} → {pv} "
+                    f"— <span style='color:#cc0000'>▼ {format_currency(delta)} "
+                    f"({pct:.0%})</span>",
+                    unsafe_allow_html=True,
+                )
+
+    return auto_ids
+
+
 def render_sell_selection(lang: str, squad) -> Optional[List[str]]:
-    """Render multiselects to choose which players to sell.
+    """Render sale recommendations + multiselects to choose players to sell.
 
     Returns list of player_id strings, or None if nothing selected.
     """
+    # Recommendations panel (before manual selection)
+    auto_ids = _render_sell_recommendations(lang, squad)
+
     st.subheader(t(lang, "select_players_to_sell"))
     st.caption(t(lang, "sell_selection_help"))
 
@@ -289,15 +387,20 @@ def render_sell_selection(lang: str, squad) -> Optional[List[str]]:
     for pos in by_pos:
         by_pos[pos].sort(key=lambda p: p.market_value or 0, reverse=True)
 
+    # Build label→id maps and compute defaults from recommendations
     selected_ids: list = []
     for pos in POS_ORDER:
         players_in_pos = by_pos[pos]
         if not players_in_pos:
             continue
         options = {_squad_label(p, lang): p.player_id for p in players_in_pos}
+        default_labels = [
+            lbl for lbl, pid in options.items() if pid in auto_ids
+        ]
         chosen = st.multiselect(
             t(lang, POS_KEYS[pos]),
             options=list(options.keys()),
+            default=default_labels,
             key=f"sell_{pos}",
         )
         selected_ids.extend(options[label] for label in chosen)
@@ -416,7 +519,9 @@ def render_budget(lang: str):
 # STEP 6 – SIGNING APPROACH
 # =============================================================================
 
-APPROACHES = ["max_value", "young_talents", "max_profit", "balanced"]
+APPROACHES = ["max_value", "young_talents", "balanced"]
+OBJECTIVES = ["smv", "net_benefit", "roi", "value_growth", "growth_pct"]
+SIM_SPEEDS = ["local", "fast", "standard"]
 
 
 def render_approach(lang: str) -> str:
@@ -436,7 +541,115 @@ def render_approach(lang: str) -> str:
     return approach
 
 
+def render_objective(lang: str) -> str:
+    """Render optimisation-objective selector. Returns the chosen objective key."""
+    st.subheader(t(lang, "objective_title"))
+
+    objective = st.radio(
+        "objective",
+        options=OBJECTIVES,
+        format_func=lambda o: t(lang, f"objective_{o}"),
+        horizontal=True,
+        key="objective",
+        label_visibility="collapsed",
+    )
+
+    st.caption(t(lang, f"objective_{objective}_help"))
+    return objective
+
+
+def render_sim_speed(lang: str) -> str:
+    """Render simulation speed selector. Returns the chosen speed key."""
+    st.subheader(t(lang, "sim_speed_title"))
+
+    speed = st.radio(
+        "sim_speed",
+        options=SIM_SPEEDS,
+        index=2,
+        format_func=lambda s: t(lang, f"sim_speed_{s}"),
+        horizontal=True,
+        key="sim_speed",
+        label_visibility="collapsed",
+    )
+
+    st.caption(t(lang, f"sim_speed_{speed}_help"))
+    return speed
+
+
 # =============================================================================
+# =============================================================================
+# STEP 9 – ADVANCED FILTERS
+# =============================================================================
+
+def render_advanced_filters(lang: str, clubs_data: List[Dict]):
+    """Render collapsible advanced-filter panel.
+
+    Returns (league_filter, banned_clubs, exclude_top_n, min_market_value, horizon).
+    """
+    with st.expander(t(lang, "filters_title"), expanded=False):
+        # ── League filter ────────────────────────────────────────────────
+        all_leagues: Dict[str, str] = {}
+        for c in clubs_data:
+            lid = c.get("league_id", "") or ""
+            lname = c.get("league", "") or lid
+            if lid and lid not in all_leagues:
+                all_leagues[lid] = lname
+        league_options = sorted(all_leagues.items(), key=lambda kv: kv[1])
+        selected_leagues = st.multiselect(
+            t(lang, "league_filter"),
+            options=[lid for lid, _ in league_options],
+            format_func=lambda lid: all_leagues.get(lid, lid),
+            help=t(lang, "league_filter_help"),
+            key="league_filter",
+        )
+        league_filter = selected_leagues or None
+
+        # ── Banned clubs ──────────────────────────────────────────────────
+        banned_text = st.text_input(
+            t(lang, "banned_clubs"),
+            placeholder=t(lang, "banned_clubs_placeholder"),
+            help=t(lang, "banned_clubs_help"),
+            key="banned_clubs",
+        )
+        banned_clubs = (
+            [c.strip() for c in banned_text.split(",") if c.strip()]
+            if banned_text else None
+        )
+
+        # ── Exclude top N ─────────────────────────────────────────────────
+        exclude_top_n = st.number_input(
+            t(lang, "exclude_top_n"),
+            min_value=0, max_value=50, value=0, step=1,
+            help=t(lang, "exclude_top_n_help"),
+            key="exclude_top_n",
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # ── Min market value ──────────────────────────────────────────
+            min_val = st.number_input(
+                t(lang, "min_market_value_title"),
+                min_value=0.0, max_value=200.0, value=0.1, step=0.5,
+                help=t(lang, "min_market_value_help"),
+                key="min_market_value",
+            )
+            min_market_value = min_val * 1_000_000 if min_val > 0 else None
+
+        with col2:
+            # ── Prediction horizon ────────────────────────────────────────
+            horizon_labels = {1: t(lang, "horizon_1"), 2: t(lang, "horizon_2"), 3: t(lang, "horizon_3")}
+            horizon = st.radio(
+                t(lang, "horizon_title"),
+                options=[1, 2, 3],
+                format_func=lambda h: horizon_labels[h],
+                horizontal=True,
+                help=t(lang, "horizon_help"),
+                key="horizon",
+            )
+
+    return league_filter, banned_clubs, exclude_top_n, min_market_value, horizon
+
+
 # SIMULATION RUNNER (with progress)
 # =============================================================================
 
@@ -449,6 +662,13 @@ def run_simulation_with_progress(
     players_to_sell: Optional[List[str]] = None,
     buy_counts: Optional[Dict[str, Tuple[int, int]]] = None,
     approach: str = "max_value",
+    objective: str = "smv",
+    sim_speed: str = "standard",
+    league_filter: Optional[List[str]] = None,
+    banned_clubs: Optional[List[str]] = None,
+    exclude_top_n: int = 0,
+    min_market_value: Optional[float] = None,
+    horizon: int = 1,
 ):
     """Run TransferSimulator.run() while feeding a Streamlit progress bar + spinner."""
     progress = st.progress(0, text=t(lang, "step_loading"))
@@ -472,6 +692,13 @@ def run_simulation_with_progress(
                 players_to_sell=players_to_sell,
                 buy_counts=buy_counts,
                 approach=approach,
+                objective=objective,
+                sim_speed=sim_speed,
+                league_filter=league_filter,
+                banned_clubs=banned_clubs,
+                exclude_top_n=exclude_top_n,
+                min_market_value=min_market_value,
+                horizon=horizon,
             )
         except ValueError as exc:
             progress.empty()
@@ -702,6 +929,210 @@ def render_results(lang: str, result, clubs_data: List[Dict]):
 # AI ANALYSIS SECTION
 # =============================================================================
 
+def _xgrowth(p) -> float:
+    mv = p.market_value or 1
+    pv = getattr(p, "predicted_value", None) or mv
+    return (pv / mv) - 1 if mv > 0 else 0.0
+
+
+def _fair_price(p) -> float:
+    return getattr(p, "predicted_value", None) or p.market_value or 0
+
+
+def _similarity(a, b) -> float:
+    if (a.position or "") != (b.position or ""):
+        return 0.0
+    mv_a, mv_b = a.market_value or 1, b.market_value or 1
+    age_a, age_b = a.age or 25, b.age or 25
+    xg_a = _xgrowth(a)
+    xg_b = _xgrowth(b)
+    val_sim = 1 - min(abs(mv_a - mv_b) / max(mv_a, mv_b), 1)
+    age_sim = 1 - min(abs(age_a - age_b) / 10, 1)
+    xg_sim = 1 - min(abs(xg_a - xg_b) / max(abs(xg_a) + 0.01, abs(xg_b) + 0.01), 1)
+    return 0.35 * val_sim + 0.25 * age_sim + 0.40 * xg_sim
+
+
+def render_player_search(lang: str):
+    """Render full-text player search with filters."""
+    st.markdown("---")
+    st.subheader(t(lang, "search_title"))
+    st.caption(t(lang, "search_help"))
+
+    sim = st.session_state.get("preloaded_sim")
+    if sim is None:
+        return
+
+    col_q, col_pos, col_val_min, col_val_max, col_age_min, col_age_max = st.columns([3, 1, 1, 1, 1, 1])
+    with col_q:
+        query = st.text_input(t(lang, "search_placeholder"), key="search_q")
+    with col_pos:
+        pos_filter = st.selectbox(
+            t(lang, "search_position"),
+            [""] + POS_ORDER,
+            format_func=lambda x: t(lang, f"pos_{x.lower()}") if x else "—",
+            key="search_pos",
+        )
+    with col_val_min:
+        val_min = st.number_input(t(lang, "search_min_value"), min_value=0.0, value=0.0, step=1.0, key="search_vmin")
+    with col_val_max:
+        val_max = st.number_input(t(lang, "search_max_value"), min_value=0.0, value=0.0, step=10.0, key="search_vmax")
+    with col_age_min:
+        age_min = st.number_input(t(lang, "search_min_age"), min_value=0, value=0, step=1, key="search_amin")
+    with col_age_max:
+        age_max = st.number_input(t(lang, "search_max_age"), min_value=0, value=0, step=1, key="search_amax")
+
+    q_lower = query.strip().lower()
+    if not q_lower and not pos_filter and val_min <= 0 and val_max <= 0 and age_min <= 0 and age_max <= 0:
+        return
+
+    results = []
+    for p in sim.all_players:
+        if q_lower and q_lower not in (p.name or "").lower():
+            continue
+        if pos_filter and (p.position or "") != pos_filter:
+            continue
+        mv = (p.market_value or 0) / 1_000_000
+        if val_min > 0 and mv < val_min:
+            continue
+        if val_max > 0 and mv > val_max:
+            continue
+        age = p.age or 0
+        if age_min > 0 and age < age_min:
+            continue
+        if age_max > 0 and age > age_max:
+            continue
+        results.append(p)
+
+    results.sort(key=lambda p: p.market_value or 0, reverse=True)
+    st.markdown(f"**{len(results)}** {t(lang, 'search_results')}")
+
+    if not results:
+        st.info(t(lang, "search_no_results"))
+        return
+
+    rows = []
+    for p in results[:50]:
+        pv = getattr(p, "predicted_value", None)
+        mv = p.market_value or 0
+        xg = ""
+        fp = ""
+        if pv and mv > 0:
+            xg = f"{((pv / mv) - 1):+.1%}"
+            fp = format_currency(pv)
+        rows.append({
+            t(lang, "search_col_name"): p.name,
+            t(lang, "search_col_team"): p.team or "?",
+            t(lang, "search_col_pos"): p.position or "?",
+            t(lang, "search_col_age"): p.age or "?",
+            t(lang, "search_col_value"): format_currency(mv),
+            t(lang, "search_col_predicted"): format_currency(pv) if pv else "—",
+            "xGrowth": xg or "—",
+            t(lang, "search_col_fair"): fp or "—",
+        })
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def render_analytics(lang: str, result):
+    """Render xGrowth ranking, similar players & fair price section."""
+    st.markdown("---")
+    st.subheader(t(lang, "analytics_section"))
+
+    sim = st.session_state.get("preloaded_sim")
+    if sim is None:
+        st.info(t(lang, "no_analytics"))
+        return
+
+    all_players = sim.all_players
+    club_ids = {p.player_id for p in sim.club_players}
+    signing_ids = {p.player_id for p in result.recommended_signings}
+
+    pool = [
+        p for p in all_players
+        if getattr(p, "predicted_value", None) is not None
+        and (p.market_value or 0) > 0
+        and not p.on_loan
+        and p.player_id not in club_ids
+    ]
+
+    # ── Tab 1: xGrowth Ranking ───────────────────────────────────────────
+    tab_xg, tab_sim, tab_fair = st.tabs([
+        t(lang, "xgrowth_title"),
+        t(lang, "similar_title"),
+        t(lang, "fair_price_title"),
+    ])
+
+    with tab_xg:
+        st.caption(t(lang, "xgrowth_help"))
+        top = sorted(pool, key=_xgrowth, reverse=True)[:20]
+        if not top:
+            st.info(t(lang, "no_analytics"))
+        else:
+            rows = []
+            for p in top:
+                xg = _xgrowth(p)
+                rows.append({
+                    t(lang, "xgrowth_col_player"): p.name,
+                    "Pos": p.position or "?",
+                    t(lang, "xgrowth_col_value"): format_currency(p.market_value),
+                    t(lang, "xgrowth_col_predicted"): format_currency(p.predicted_value),
+                    "xGrowth": f"{xg:+.1%}",
+                    t(lang, "xgrowth_col_fair"): format_currency(_fair_price(p)),
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    # ── Tab 2: Similar players ───────────────────────────────────────────
+    with tab_sim:
+        st.caption(t(lang, "similar_help"))
+        for s in result.recommended_signings:
+            xg_s = _xgrowth(s)
+            st.markdown(
+                f"**{s.name}** ({s.position}, {format_currency(s.market_value)}) "
+                f"— xGrowth: **{xg_s:+.1%}** — {t(lang, 'fair_price_title')}: **{format_currency(_fair_price(s))}**"
+            )
+            candidates = [
+                p for p in pool
+                if p.player_id != s.player_id
+                and p.player_id not in signing_ids
+                and (p.position or "") == (s.position or "")
+            ]
+            scored = sorted(
+                [(p, _similarity(s, p)) for p in candidates],
+                key=lambda x: x[1], reverse=True,
+            )[:5]
+            if scored:
+                sim_rows = []
+                for p, sc in scored:
+                    sim_rows.append({
+                        t(lang, "xgrowth_col_player"): p.name,
+                        "Equipo" if lang == "es" else "Team": p.team or "?",
+                        t(lang, "xgrowth_col_value"): format_currency(p.market_value),
+                        "xGrowth": f"{_xgrowth(p):+.1%}",
+                        t(lang, "xgrowth_col_fair"): format_currency(_fair_price(p)),
+                        t(lang, "similar_col_similarity"): f"{sc:.0%}",
+                    })
+                st.dataframe(sim_rows, use_container_width=True, hide_index=True)
+            st.markdown("---")
+
+    # ── Tab 3: Fair price ────────────────────────────────────────────────
+    with tab_fair:
+        st.caption(t(lang, "fair_price_help"))
+        if result.recommended_signings:
+            rows = []
+            for p in result.recommended_signings:
+                fp = _fair_price(p)
+                mv = p.market_value or 0
+                diff = fp - mv
+                rows.append({
+                    t(lang, "xgrowth_col_player"): p.name,
+                    "Pos": p.position or "?",
+                    t(lang, "xgrowth_col_value"): format_currency(mv),
+                    t(lang, "xgrowth_col_fair"): format_currency(fp),
+                    "Δ": format_currency(diff),
+                    "xGrowth": f"{_xgrowth(p):+.1%}",
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
 def render_ai_section(lang: str, result):
     """LLM analysis: one summary per language, cached in session_state."""
     st.markdown("---")
@@ -799,6 +1230,9 @@ def main():
     squad = st.session_state["preloaded_squad"]
     st.success(f"{t(lang, 'data_loaded')} — {t(lang, 'squad_loaded', count=len(squad))}")
 
+    # ── Player search ────────────────────────────────────────────────────────
+    render_player_search(lang)
+
     # ── Step 3: Select players to sell ───────────────────────────────────────
     players_to_sell = render_sell_selection(lang, squad)
 
@@ -811,13 +1245,31 @@ def main():
     # ── Step 6: Signing approach ─────────────────────────────────────────────
     approach = render_approach(lang)
 
-    # ── Step 7: Simulate ─────────────────────────────────────────────────────
+    # ── Step 7: Optimisation objective ────────────────────────────────────────
+    objective = render_objective(lang)
+
+    # ── Step 8: Simulation speed ──────────────────────────────────────────────
+    sim_speed = render_sim_speed(lang)
+
+    # ── Step 9: Advanced filters ──────────────────────────────────────────────
+    league_filter, banned_clubs, exclude_top_n, min_market_value, horizon = (
+        render_advanced_filters(lang, clubs_data)
+    )
+
+    # ── Step 10: Simulate ────────────────────────────────────────────────────
     if st.button(t(lang, "run_simulation"), type="primary", use_container_width=True):
         result = run_simulation_with_progress(
             lang, club_name, season, tb, unlimited,
             players_to_sell=players_to_sell,
             buy_counts=buy_counts,
             approach=approach,
+            objective=objective,
+            sim_speed=sim_speed,
+            league_filter=league_filter,
+            banned_clubs=banned_clubs,
+            exclude_top_n=exclude_top_n,
+            min_market_value=min_market_value,
+            horizon=horizon,
         )
         st.session_state["sim_result"] = result
         st.session_state["sim_clubs_data"] = clubs_data
@@ -828,6 +1280,7 @@ def main():
         result = st.session_state["sim_result"]
         clubs_data_saved = st.session_state.get("sim_clubs_data", clubs_data)
         render_results(lang, result, clubs_data_saved)
+        render_analytics(lang, result)
         render_ai_section(lang, result)
 
     _render_footer(lang)
