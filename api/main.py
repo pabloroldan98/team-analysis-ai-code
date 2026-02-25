@@ -75,6 +75,14 @@ class SimulateRequest(BaseModel):
     players_to_sell: List[str] = []
     buy_counts: Optional[Dict[str, Any]] = None
     approach: str = "max_value"
+    objective: str = "smv"
+    sim_speed: str = "standard"
+    # Advanced filters
+    league_filter: Optional[List[str]] = None
+    banned_clubs: Optional[List[str]] = None
+    exclude_top_n: int = 0
+    min_market_value: Optional[float] = None
+    horizon: int = 1
 
 class SoldPlayerOut(BaseModel):
     player_id: str
@@ -97,6 +105,79 @@ class SimulationResultOut(BaseModel):
     recommended_formation: List[int]
     total_signing_cost: int
     total_predicted_value: float
+
+class SellRecommendation(BaseModel):
+    player_id: str
+    name: str
+    position: str
+    age: Optional[int]
+    market_value: float
+    predicted_value: float
+    decline: float
+    decline_pct: float
+    img_url: str = ""
+
+class SellRecommendationsOut(BaseModel):
+    peak_players: List[SellRecommendation]
+
+class XGrowthPlayer(BaseModel):
+    player_id: str
+    name: str
+    position: str
+    age: Optional[int]
+    team: str
+    market_value: float
+    predicted_value: float
+    xgrowth: float
+    fair_price: float
+    img_url: str = ""
+
+class SimilarPlayerOut(BaseModel):
+    player_id: str
+    name: str
+    position: str
+    age: Optional[int]
+    team: str
+    market_value: float
+    predicted_value: float
+    xgrowth: float
+    fair_price: float
+    similarity: float
+    img_url: str = ""
+
+class PlayerAnalysisOut(BaseModel):
+    player_id: str
+    name: str
+    position: str
+    age: Optional[int]
+    team: str
+    market_value: float
+    predicted_value: float
+    xgrowth: float
+    fair_price: float
+    similar_players: List[SimilarPlayerOut]
+    img_url: str = ""
+
+class AnalyticsOut(BaseModel):
+    xgrowth_ranking: List[XGrowthPlayer]
+    signing_analysis: List[PlayerAnalysisOut]
+
+class SearchPlayerOut(BaseModel):
+    player_id: str
+    name: str
+    position: str
+    age: Optional[int]
+    team: str
+    nationality: str
+    market_value: float
+    predicted_value: Optional[float]
+    xgrowth: Optional[float]
+    fair_price: Optional[float]
+    img_url: str = ""
+
+class SearchResults(BaseModel):
+    players: List[SearchPlayerOut]
+    total: int
 
 class AISummaryRequest(BaseModel):
     api_key: str
@@ -186,6 +267,40 @@ def get_clubs(season: str) -> List[ClubOut]:
     ]
 
 
+class LeagueOut(BaseModel):
+    league_id: str
+    name: str
+    country: str = ""
+
+
+@app.get("/api/leagues")
+def get_leagues(season: str) -> List[LeagueOut]:
+    """Return distinct leagues available for a season (from teams data)."""
+    if season.lower() == TODAY_SEASON:
+        bases = list_json_bases("teams_all_*.json")
+        base = bases[-1] if bases else None
+    else:
+        base = f"teams_all_{season}"
+
+    if base is None:
+        return []
+    data = load_json(base)
+    if data is None or not isinstance(data, list):
+        return []
+
+    seen: Dict[str, LeagueOut] = {}
+    for team in data:
+        lid = team.get("league_id", "") or ""
+        if lid and lid not in seen:
+            seen[lid] = LeagueOut(
+                league_id=lid,
+                name=team.get("league", "") or lid,
+                country=team.get("country", ""),
+            )
+    result = sorted(seen.values(), key=lambda l: l.name)
+    return result
+
+
 @app.post("/api/load-squad")
 def load_squad(req: LoadSquadRequest) -> List[PlayerOut]:
     from simulator.transfer_simulator import TransferSimulator
@@ -203,6 +318,216 @@ def load_squad(req: LoadSquadRequest) -> List[PlayerOut]:
 
     _sim_cache[cache_key] = sim
     return [_player_to_out(p) for p in squad]
+
+
+@app.get("/api/sell-recommendations")
+def sell_recommendations(club_name: str, season: str) -> SellRecommendationsOut:
+    """Return sale recommendations for the loaded squad."""
+    cache_key = f"{club_name}|{season}"
+    sim = _sim_cache.get(cache_key)
+    if sim is None:
+        raise HTTPException(status_code=400, detail="Load squad first")
+
+    squad = sim.club_players
+    peak: List[SellRecommendation] = []
+    for p in squad:
+        mv = p.market_value or 0
+        pv = getattr(p, "predicted_value", None)
+        if pv is None or mv <= 0 or p.on_loan:
+            continue
+        delta = mv - pv
+        if delta > 0:
+            peak.append(SellRecommendation(
+                player_id=p.player_id,
+                name=p.name,
+                position=p.position or "N/A",
+                age=p.age,
+                market_value=mv,
+                predicted_value=pv,
+                decline=delta,
+                decline_pct=delta / mv,
+                img_url=p.img_url or "",
+            ))
+    peak.sort(key=lambda r: r.decline, reverse=True)
+    return SellRecommendationsOut(peak_players=peak)
+
+
+def _compute_xgrowth(p) -> float:
+    mv = p.market_value or 1
+    pv = p.predicted_value or mv
+    return (pv / mv) - 1 if mv > 0 else 0.0
+
+
+def _compute_fair_price(p) -> float:
+    """Fair price = predicted_value (break-even point for the buyer)."""
+    return p.predicted_value or p.market_value or 0
+
+
+def _player_similarity(a, b) -> float:
+    """0-1 financial similarity score between two players."""
+    if (a.position or "") != (b.position or ""):
+        return 0.0
+    mv_a, mv_b = a.market_value or 1, b.market_value or 1
+    age_a, age_b = a.age or 25, b.age or 25
+    xg_a = ((a.predicted_value or mv_a) / mv_a) - 1 if mv_a > 0 else 0
+    xg_b = ((b.predicted_value or mv_b) / mv_b) - 1 if mv_b > 0 else 0
+    val_sim = 1 - min(abs(mv_a - mv_b) / max(mv_a, mv_b), 1)
+    age_sim = 1 - min(abs(age_a - age_b) / 10, 1)
+    xg_sim = 1 - min(abs(xg_a - xg_b) / max(abs(xg_a) + 0.01, abs(xg_b) + 0.01), 1)
+    return 0.35 * val_sim + 0.25 * age_sim + 0.40 * xg_sim
+
+
+@app.get("/api/analytics")
+def get_analytics(club_name: str, season: str) -> AnalyticsOut:
+    """Return xGrowth ranking and signing analysis with similar players."""
+    cache_key = f"{club_name}|{season}"
+    sim = _sim_cache.get(cache_key)
+    if sim is None:
+        raise HTTPException(status_code=400, detail="Load squad first")
+
+    all_players = sim.all_players
+    signings = _last_result.recommended_signings if _last_result else []
+    signing_ids = {p.player_id for p in signings}
+    club_ids = {p.player_id for p in sim.club_players}
+
+    # xGrowth ranking: top players by growth potential from the full pool
+    pool = [
+        p for p in all_players
+        if p.predicted_value is not None
+        and (p.market_value or 0) > 0
+        and not p.on_loan
+        and p.player_id not in club_ids
+    ]
+    pool.sort(key=lambda p: _compute_xgrowth(p), reverse=True)
+    xgrowth_ranking = [
+        XGrowthPlayer(
+            player_id=p.player_id,
+            name=p.name,
+            position=p.position or "N/A",
+            age=p.age,
+            team=p.team or "",
+            market_value=p.market_value or 0,
+            predicted_value=p.predicted_value or 0,
+            xgrowth=round(_compute_xgrowth(p), 4),
+            fair_price=round(_compute_fair_price(p), 0),
+            img_url=p.img_url or "",
+        )
+        for p in pool[:30]
+    ]
+
+    # Signing analysis: for each recommended signing, find similar players
+    signing_analysis = []
+    for s in signings:
+        candidates = [
+            p for p in pool
+            if p.player_id != s.player_id
+            and p.player_id not in signing_ids
+            and (p.position or "") == (s.position or "")
+        ]
+        scored = [(p, _player_similarity(s, p)) for p in candidates]
+        scored.sort(key=lambda t: t[1], reverse=True)
+        similar = [
+            SimilarPlayerOut(
+                player_id=p.player_id,
+                name=p.name,
+                position=p.position or "N/A",
+                age=p.age,
+                team=p.team or "",
+                market_value=p.market_value or 0,
+                predicted_value=p.predicted_value or 0,
+                xgrowth=round(_compute_xgrowth(p), 4),
+                fair_price=round(_compute_fair_price(p), 0),
+                similarity=round(sim_score, 3),
+                img_url=p.img_url or "",
+            )
+            for p, sim_score in scored[:5]
+        ]
+        signing_analysis.append(PlayerAnalysisOut(
+            player_id=s.player_id,
+            name=s.name,
+            position=s.position or "N/A",
+            age=s.age,
+            team=s.team or "",
+            market_value=s.market_value or 0,
+            predicted_value=s.predicted_value or 0,
+            xgrowth=round(_compute_xgrowth(s), 4),
+            fair_price=round(_compute_fair_price(s), 0),
+            similar_players=similar,
+            img_url=s.img_url or "",
+        ))
+
+    return AnalyticsOut(
+        xgrowth_ranking=xgrowth_ranking,
+        signing_analysis=signing_analysis,
+    )
+
+
+@app.get("/api/search-players")
+def search_players(
+    q: str = "",
+    season: str = "",
+    position: Optional[str] = None,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+    min_age: Optional[int] = None,
+    max_age: Optional[int] = None,
+    limit: int = 50,
+) -> SearchResults:
+    """Full-text player search with filters."""
+    cache_key = None
+    sim = None
+    for k, v in _sim_cache.items():
+        if season and season in k:
+            sim = v
+            cache_key = k
+            break
+    if sim is None:
+        for k, v in _sim_cache.items():
+            sim = v
+            cache_key = k
+            break
+    if sim is None:
+        raise HTTPException(status_code=400, detail="Load squad first")
+
+    query_lower = q.strip().lower()
+    results = []
+    for p in sim.all_players:
+        if query_lower and query_lower not in (p.name or "").lower():
+            continue
+        if position and (p.position or "") != position:
+            continue
+        mv = p.market_value or 0
+        if min_value is not None and mv < min_value * 1_000_000:
+            continue
+        if max_value is not None and mv > max_value * 1_000_000:
+            continue
+        age = p.age or 0
+        if min_age is not None and age < min_age:
+            continue
+        if max_age is not None and age > max_age:
+            continue
+        pv = p.predicted_value
+        xg = None
+        fp = None
+        if pv is not None and mv > 0:
+            xg = round((pv / mv) - 1, 4)
+            fp = round(pv, 0)
+        results.append(SearchPlayerOut(
+            player_id=p.player_id,
+            name=p.name,
+            position=p.position or "N/A",
+            age=p.age,
+            team=p.team or "",
+            nationality=p.nationality or "",
+            market_value=mv,
+            predicted_value=pv,
+            xgrowth=xg,
+            fair_price=fp,
+            img_url=p.img_url or "",
+        ))
+    results.sort(key=lambda x: x.market_value, reverse=True)
+    total = len(results)
+    return SearchResults(players=results[:limit], total=total)
 
 
 @app.post("/api/simulate")
@@ -246,6 +571,13 @@ def simulate(req: SimulateRequest) -> SimulationResultOut:
             players_to_sell=req.players_to_sell or None,
             buy_counts=buy_counts,
             approach=req.approach,
+            objective=req.objective,
+            sim_speed=req.sim_speed,
+            league_filter=req.league_filter,
+            banned_clubs=req.banned_clubs,
+            exclude_top_n=req.exclude_top_n,
+            min_market_value=req.min_market_value,
+            horizon=req.horizon,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -355,6 +687,13 @@ def simulate_stream(req: SimulateRequest):
                 players_to_sell=req.players_to_sell or None,
                 buy_counts=buy_counts,
                 approach=req.approach,
+                objective=req.objective,
+                sim_speed=req.sim_speed,
+                league_filter=req.league_filter,
+                banned_clubs=req.banned_clubs,
+                exclude_top_n=req.exclude_top_n,
+                min_market_value=req.min_market_value,
+                horizon=req.horizon,
             )
             _last_result = result
             q.put({"type": "result", "data": _build_result_dict(result)})
