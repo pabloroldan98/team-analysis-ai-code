@@ -210,7 +210,7 @@ PLAYERS SOLD:
 PLAYERS BOUGHT (cost → predicted value in 1 year):
 {bought_text}
 
-REMAINING SQUAD:
+REMAINING SQUAD (players who stayed: not sold, not bought):
 {rest_squad_text}
 
 FINANCIALS:
@@ -219,6 +219,8 @@ FINANCIALS:
 - Sold total: €{sold_total_value:.1f}M (pred €{sold_total_predicted:.1f}M)
 - Bought total: €{bought_total_value:.1f}M (pred €{bought_total_predicted:.1f}M)
 - Staying total: €{rest_squad_total_value:.1f}M (pred €{rest_squad_total_predicted:.1f}M)
+
+Note: Previous squad = Remaining squad + Players sold ; Final squad = Remaining squad + Players bought
 
 === YOUR TASK ===
 
