@@ -373,28 +373,29 @@ def _compute_age(birth_date_str: str, reference_date: datetime) -> Optional[floa
 def _get_value_at_date(
     valuations: List[Tuple[datetime, float]],
     target_date: datetime,
-    tolerance_days: int = 90,
+    tolerance_days: int = 15,
 ) -> Optional[float]:
     """
-    Get valuation closest to target_date within tolerance.
-    Uses binary search when list is sorted by date (O(log n) vs O(n)).
+    Get the most recent valuation on or before *target_date*.
+
+    Falls back to the earliest valuation **after** *target_date* only when
+    nothing on-or-before exists, and only if it is within *tolerance_days*.
+
+    Uses binary search (O(log n)); *valuations* must be sorted by date.
     """
     if not valuations:
         return None
-    
-    tolerance = timedelta(days=tolerance_days)
-    # Binary search for closest date (list must be sorted by date)
+
     dates = [v[0] for v in valuations]
-    idx = bisect.bisect_left(dates, target_date)
-    candidates: List[Tuple[timedelta, float]] = []
-    if idx < len(dates):
-        candidates.append((abs(dates[idx] - target_date), valuations[idx][1]))
+    idx = bisect.bisect_right(dates, target_date)
+
     if idx > 0:
-        candidates.append((abs(dates[idx - 1] - target_date), valuations[idx - 1][1]))
-    if not candidates:
-        return None
-    best_diff, best_val = min(candidates, key=lambda x: x[0])
-    return best_val if best_diff <= tolerance else None
+        return valuations[idx - 1][1]
+
+    if idx < len(dates) and (dates[idx] - target_date) <= timedelta(days=tolerance_days):
+        return valuations[idx][1]
+
+    return None
 
 
 def _compute_trend(current: float, past: Optional[float]) -> float:
@@ -663,7 +664,7 @@ def _get_team_total_values_at_cutoff(
         if not val_list:
             continue
         val_list.sort(key=lambda x: x[0])
-        v_at = _get_value_at_date(val_list, cutoff_date, tolerance_days=90)
+        v_at = _get_value_at_date(val_list, cutoff_date, tolerance_days=30)
         if v_at is not None and v_at > 0:
             tid = str(t.to_club_id)
             team_totals[tid] = team_totals.get(tid, 0.0) + v_at
@@ -948,12 +949,12 @@ def extract_player_features(
     # Value at specific past dates
     val_list = [(d, v) for d, v, _ in parsed]
     
-    value_6m_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=180), 60)
-    value_1y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=365), 90)
-    value_2y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=730), 90)
-    value_3y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1095), 90)
-    value_4y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1460), 90)
-    value_5y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1825), 90)
+    value_6m_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=180), 15)
+    value_1y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=365), 30)
+    value_2y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=730), 30)
+    value_3y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1095), 30)
+    value_4y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1460), 30)
+    value_5y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1825), 30)
     
     # Trends
     trend_6m = _compute_trend(current_value, value_6m_ago)

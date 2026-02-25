@@ -584,15 +584,98 @@ def main():
         action="store_true",
         help="Also train 4 segment-specific models by value range (<1M, 1M-10M, 10M-100M, >=100M)",
     )
+    parser.add_argument(
+        "--all-seasons",
+        action="store_true",
+        help="Train for ALL seasons from 1998-1999 to 2025-2026 in one go (combines with --segmented)",
+    )
     
     args = parser.parse_args()
     
+    # --all-seasons: train every season in one shot
+    if args.all_seasons:
+        ALL_SEASONS = [f"{y}-{y+1}" for y in range(1998, 2026)]
+        verbose = not args.quiet
+        xgb_kw = dict(
+            n_estimators=args.n_estimators,
+            max_depth=args.max_depth,
+            learning_rate=args.learning_rate,
+        )
+
+        try:
+            first_season = ALL_SEASONS[0]
+            if verbose:
+                print(f"\n{'#'*60}")
+                print(f"  ALL-SEASONS TRAINING ({len(ALL_SEASONS)} seasons)")
+                print(f"  Range: {ALL_SEASONS[0]} → {ALL_SEASONS[-1]}")
+                print(f"  Segmented: {args.segmented}")
+                print(f"{'#'*60}")
+
+            # Build dataset once (on the first season or if requested)
+            train_model(
+                season=first_season,
+                min_valuations=args.min_valuations,
+                verbose=verbose,
+                rebuild_dataset=args.rebuild_dataset,
+                cutoff_months=args.cutoff_months,
+                test_years=args.test_years,
+                n_jobs=args.n_jobs,
+                **xgb_kw,
+            )
+
+            full_ds = load_training_dataset(cutoff_months=args.cutoff_months) or []
+
+            if args.segmented and full_ds:
+                train_segmented_models(
+                    season=first_season,
+                    full_dataset=full_ds,
+                    verbose=verbose,
+                    test_years=args.test_years,
+                    **xgb_kw,
+                )
+
+            # Remaining seasons reuse the cached dataset
+            for s in ALL_SEASONS[1:]:
+                if verbose:
+                    print(f"\n{'='*60}")
+                    print(f"  Season: {s}")
+                    print(f"{'='*60}")
+                train_model(
+                    season=s,
+                    min_valuations=args.min_valuations,
+                    verbose=verbose,
+                    rebuild_dataset=False,
+                    cutoff_months=args.cutoff_months,
+                    test_years=args.test_years,
+                    n_jobs=args.n_jobs,
+                    **xgb_kw,
+                )
+                if args.segmented and full_ds:
+                    train_segmented_models(
+                        season=s,
+                        full_dataset=full_ds,
+                        verbose=verbose,
+                        test_years=args.test_years,
+                        **xgb_kw,
+                    )
+
+            if verbose:
+                print(f"\n{'#'*60}")
+                print(f"  ALL-SEASONS TRAINING COMPLETE")
+                print(f"  Trained {len(ALL_SEASONS)} global models" +
+                      (f" + segmented" if args.segmented else ""))
+                print(f"{'#'*60}")
+        except Exception as e:
+            print(f"Error: {e}")
+            import traceback; traceback.print_exc()
+            sys.exit(1)
+        return
+
     # Determine season or cutoff
     season = args.season
     cutoff_date = None
     
     if not season and not args.cutoff:
-        # Default to 2023-2024
         season = "2023-2024"
     elif args.cutoff and not season:
         try:
@@ -603,7 +686,7 @@ def main():
     
     # Train
     try:
-        model_path =         train_model(
+        model_path = train_model(
             season=season,
             cutoff_date=cutoff_date,
             output_name=args.output,

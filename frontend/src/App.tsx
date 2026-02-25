@@ -19,13 +19,13 @@ function LoadingOverlay({
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center">
       <div className="flex flex-col items-center gap-3 min-w-[280px]">
-        <div className="w-8 h-8 border-[3px] border-gray-500 border-t-primary rounded-full animate-spin" />
+        <div className="w-8 h-8 border-[3px] border-gray-500 border-t-secondary rounded-full animate-spin" />
         <span className="text-white text-sm">{text}</span>
         {percent > 0 && (
           <div className="w-full max-w-xs flex items-center gap-2.5">
             <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
               <div
-                className="h-full bg-primary rounded-full transition-[width] duration-300"
+                className="h-full bg-secondary rounded-full transition-[width] duration-300"
                 style={{ width: `${percent}%` }}
               />
             </div>

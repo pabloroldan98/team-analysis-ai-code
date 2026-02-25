@@ -695,7 +695,7 @@ export default function ConfigPanel({
 
       {squad && (
         <>
-          <div className="bg-primary-light text-primary-dark text-sm font-medium px-4 py-2 rounded-lg">
+          <div className="bg-secondary-light text-primary-dark text-sm font-medium px-4 py-2 rounded-lg border border-secondary/30">
             {t(lang, "data_loaded")} — {t(lang, "squad_loaded", { count: squad.length })}
           </div>
 
@@ -753,7 +753,7 @@ export default function ConfigPanel({
           <button
             onClick={handleSimulate}
             disabled={simulating}
-            className="btn-primary text-lg py-3"
+            className="btn-accent text-lg py-3"
           >
             {simulating ? t(lang, "simulating") : t(lang, "run_simulation")}
           </button>

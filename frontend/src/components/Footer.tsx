@@ -8,7 +8,12 @@ export default function Footer({ lang }: { lang: Lang }) {
       : "https://www.linkedin.com/in/pablo-roldanp/";
 
   return (
-    <footer className="border-t border-gray-200 mt-10 py-6 text-center text-xs text-gray-400">
+    <footer className="bg-primary-dark text-gray-400 mt-10 py-6 text-center text-xs">
+      <img
+        src="/assets/logo-dark.png"
+        alt="SoccerSolver"
+        className="h-6 mx-auto mb-3 opacity-60"
+      />
       <p>{t(lang, "footer")}</p>
       <p className="mt-1">
         {t(lang, "created_by")}{" "}
@@ -16,7 +21,7 @@ export default function Footer({ lang }: { lang: Lang }) {
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-primary hover:underline"
+          className="text-secondary hover:underline"
         >
           Pablo Roldán
         </a>

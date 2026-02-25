@@ -29,6 +29,11 @@
     @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-2 px-5
            rounded-lg transition-colors duration-200 w-full;
   }
+  .btn-accent {
+    @apply bg-secondary hover:bg-secondary-dark text-primary-dark font-semibold
+           py-2.5 px-6 rounded-lg transition-colors duration-200 disabled:opacity-50
+           disabled:cursor-not-allowed w-full;
+  }
   .card {
     @apply bg-white rounded-xl shadow-sm border border-gray-100 p-5;
   }
