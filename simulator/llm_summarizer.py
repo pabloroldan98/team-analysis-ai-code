@@ -195,62 +195,55 @@ def _build_detailed_prompt(
     bought_text = "\n".join(bought_info) if bought_info else "  None"
     rest_squad_text = "\n".join(rest_squad_info) if rest_squad_info else "  No squad data available"
     
-    return f"""You are a football analyst. Analyze this transfer window simulation for {club_name} in the {season} season.
+    return f"""You are an elite football transfer analyst. Produce a structured report for {club_name}'s {season} transfer window simulation.
 
-IMPORTANT: Start your response immediately with the analysis. Be direct and insightful.
+{f'IMPORTANT: Write your ENTIRE response in Spanish.' if language == 'es' else f'IMPORTANT: Write your ENTIRE response in English.' if language == 'en' else 'If the club name is in Spanish, respond in Spanish; otherwise respond in English.'}
 
-=== YOUR TASK ===
-Write a strategic analysis (8-12 sentences) that tells a story about this transfer window. Focus on:
-
-1. THE DEPARTURES: What do these sales mean for the club? 
-   - Are they losing key players or selling fringe players?
-   - Is this a generational change? (e.g., selling a 30-year-old starter to bring in young talent)
-   - Compare the sold players' value to the rest of the squad - were these important players?
-
-2. THE ARRIVALS: What do these signings bring?
-   - Do they fill the gaps left by the departures?
-   - Are they buying potential (low cost, high predicted value) or proven quality?
-   - How do they compare to the existing players in their positions?
-
-3. THE BIGGER PICTURE:
-   - Is this a rebuilding window or a consolidation window?
-   - Financial verdict: Expected Net Benefit is €{net_benefit:+.1f}M - is this good business?
-
-Be specific about player names, positions, and values. Tell a coherent story about what this window means for the club.
-{f'IMPORTANT: Write your entire response in Spanish.' if language == 'es' else f'IMPORTANT: Write your entire response in English.' if language == 'en' else 'If the club name is in Spanish, respond in Spanish; otherwise respond in English.'}
-
-=== DATA FOR ANALYSIS ===
+=== DATA ===
 
 BUDGET:
-- Initial transfer budget: €{initial_budget}M
-- Revenue from player sales: €{sales_revenue}M  
-- Total available budget: €{total_budget}M
+- Initial: €{initial_budget}M | Sales revenue: €{sales_revenue}M | Total: €{total_budget}M
 
-PLAYERS SOLD (and their destinations):
+PLAYERS SOLD:
 {sold_text}
 
-PLAYERS BOUGHT (with current cost and predicted value in 1 year):
+PLAYERS BOUGHT (cost → predicted value in 1 year):
 {bought_text}
 
-FINANCIAL SUMMARY:
-- Total spending on new signings: €{total_cost:.1f}M
-- Remaining budget: €{remaining_budget:.1f}M
-- Total predicted value of signings (1 year): €{total_predicted:.1f}M
-- Expected Net Financial Benefit: €{net_benefit:+.1f}M
-
-REMAINING SQUAD (players who stayed - not sold, not bought):
+REMAINING SQUAD:
 {rest_squad_text}
 
-SQUAD VALUES:
-Total value of sold players: €{sold_total_value:.1f}M (predicted in 1 year: €{sold_total_predicted:.1f}M)
-Total value of bought players: €{bought_total_value:.1f}M (predicted in 1 year: €{bought_total_predicted:.1f}M)
-Total value of remaining players: €{rest_squad_total_value:.1f}M (predicted in 1 year: €{rest_squad_total_predicted:.1f}M)
+FINANCIALS:
+- Spending: €{total_cost:.1f}M | Remaining: €{remaining_budget:.1f}M
+- Predicted value of signings (1yr): €{total_predicted:.1f}M | Net Benefit: €{net_benefit:+.1f}M
+- Sold total: €{sold_total_value:.1f}M (pred €{sold_total_predicted:.1f}M)
+- Bought total: €{bought_total_value:.1f}M (pred €{bought_total_predicted:.1f}M)
+- Staying total: €{rest_squad_total_value:.1f}M (pred €{rest_squad_total_predicted:.1f}M)
 
+=== YOUR TASK ===
 
-Note: Previous squad = Remaining players + Players sold ; Final squad = Remaining players + Players bought
+Write a structured report with these sections. Use markdown formatting (##, bold, bullet points).
 
+## 1. Overall Verdict (2-3 sentences)
+A headline-style verdict on the window. Is it a rebuilding, consolidation, or marquee window?
 
-Now write your analysis, starting with the overall verdict:"""
+## 2. Sale-by-Sale Reasoning
+For EACH sold player, write 1-2 sentences explaining:
+- **Why sell now**: Was the player past peak? Declining value? Needed the budget? Squad depth made them expendable?
+- **Financial logic**: Compare market value vs predicted value. If predicted < market → good timing. If no buyer → explain the difficulty.
+
+## 3. Signing-by-Signing Reasoning
+For EACH signed player, write 2-3 sentences explaining:
+- **Why this player**: What does the model see? Growth potential (compare cost vs predicted)? Position need?
+- **xGrowth**: Calculate and show (predicted_value / market_value - 1) as a percentage.
+- **Fair price assessment**: Is the market_value a fair price? Overpay or bargain?
+
+## 4. Financial Summary
+- Total investment vs expected return
+- ROI percentage
+- Risk assessment (concentration risk, age profile)
+
+Be specific with names, numbers, and percentages. No filler."""
 
 
 def _build_simple_prompt(
