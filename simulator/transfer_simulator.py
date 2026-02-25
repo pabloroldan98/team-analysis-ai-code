@@ -901,12 +901,9 @@ class TransferSimulator:
         players: List[Player],
         club_players: List[Player],
         team_league_mapping: Dict[str, Dict[str, Dict[str, str]]],
+        min_value: float = MIN_FILTER_MARKET_VALUE,
     ) -> List[Player]:
-        f"""
-        Filter out players with market value < €{MIN_FILTER_MARKET_VALUE/1_000_000:.1f}M unless they play in:
-        - A top 5 league (GB1, IT1, L1, FR1, ES1), or
-        - The same league as the club we're simulating for.
-        """
+        """Filter players below *min_value* unless in top-5 league or club's league."""
         if not club_players:
             return players
 
@@ -920,10 +917,9 @@ class TransferSimulator:
         result = []
         for p in players:
             mv = p.market_value or 0
-            if mv >= MIN_FILTER_MARKET_VALUE:
+            if mv >= min_value:
                 result.append(p)
                 continue
-            # Below MIN_FILTER_MARKET_VALUE: keep only if in top 5 league or club's league
             player_league_id = ""
             if (p.team_id or "").strip():
                 player_league_id = (
@@ -951,6 +947,14 @@ class TransferSimulator:
         players_to_sell: Optional[List[str]] = None,
         buy_counts: Optional[Dict[str, Tuple[int, int]]] = None,
         approach: str = "max_value",
+        objective: str = "smv",
+        sim_speed: str = "standard",
+        # ── Advanced filters ──────────────────────────────────────────
+        league_filter: Optional[List[str]] = None,
+        banned_clubs: Optional[List[str]] = None,
+        exclude_top_n: int = 0,
+        min_market_value: Optional[float] = None,
+        horizon: int = 1,
     ) -> TransferResult:
         f"""
         Run the transfer simulation.
@@ -978,15 +982,39 @@ class TransferSimulator:
             buy_counts: Optional per-position (min, max) range of players to buy.
                 E.g. ``{{"GK": (0, 1), "DEF": (1, 3), "MID": (0, 2), "ATT": (1, 2)}}``.
                 All combinations are evaluated and the best one is selected.
-            approach: Signing strategy to use:
-                - ``"max_value"``: maximize predicted future value (default)
-                - ``"young_talents"``: only players ≤ 23, maximize predicted value
-                - ``"max_profit"``: maximize expected profit (predicted − cost)
-                - ``"balanced"``: age-weighted predicted value (prime-age bonus)
+            approach: Player filtering / weighting strategy:
+                - ``"max_value"``: no filter, all eligible players (default)
+                - ``"young_talents"``: only players ≤ 23
+                - ``"max_profit"``: legacy alias → sets objective to net_benefit
+                - ``"balanced"``: age-weighted predicted-value bonus
+            objective: What the knapsack optimises:
+                - ``"smv"``: Squad Market Value (maximize total predicted value)
+                - ``"net_benefit"``: maximize absolute profit (predicted − cost)
+                - ``"roi"``: maximize ROI percentage ((predicted − cost) / cost)
+                - ``"value_growth"``: maximize absolute value growth
+                - ``"growth_pct"``: maximize value growth percentage
+            sim_speed: Simulation speed/quality trade-off:
+                - ``"local"``: fastest, aggressive candidate pruning
+                - ``"fast"``: moderate pruning
+                - ``"standard"``: full computation, best results
+            league_filter: Optional list of league IDs (e.g. ``["ES1", "GB1"]``)
+                to restrict available players. ``None`` means no league filter.
+            banned_clubs: Optional list of club names to exclude from signings.
+            exclude_top_n: Exclude the N richest clubs (by total market value)
+                from signing targets.  ``0`` means no exclusion.
+            min_market_value: Minimum market value (euros) for signing candidates.
+                Overrides the default ``MIN_FILTER_MARKET_VALUE`` when provided.
+            horizon: Prediction horizon in years (1, 2 or 3).  The 1-year model
+                is applied iteratively for multi-year horizons.
 
         Returns:
             TransferResult with simulation details
         """
+        # Legacy approach migration
+        if approach == "max_profit":
+            approach = "max_value"
+            if objective == "smv":
+                objective = "net_benefit"
 
         def _progress(pct: float, key: str) -> None:
             if progress_callback is not None:
@@ -1064,21 +1092,63 @@ class TransferSimulator:
         )
         available_players = [p for p in available_players if p.player_id not in sold_player_ids]
 
-        # Filter out players <1M unless in top 5 leagues or club's league
+        # Load team→league mapping (needed for league-based filters)
+        team_league_mapping = (
+            pred_cache["team_league_mapping"]
+            if (pred_cache and "team_league_mapping" in pred_cache)
+            else load_team_league_mapping(verbose=verbose)
+        )
+
+        # Default value/league filter
         if filter_players:
             if verbose:
                 print("  Filtering players by value and league...")
-            team_league_mapping = (
-                pred_cache["team_league_mapping"]
-                if (pred_cache and "team_league_mapping" in pred_cache)
-                else load_team_league_mapping(verbose=verbose)
-            )
+            effective_min = min_market_value if min_market_value is not None else MIN_FILTER_MARKET_VALUE
             before = len(available_players)
             available_players = self._filter_players_by_value_and_league(
-                available_players, club_players, team_league_mapping
+                available_players, club_players, team_league_mapping,
+                min_value=effective_min,
             )
             if verbose:
-                print(f"  Filtered {before} -> {len(available_players)} players (excluded <€{MIN_FILTER_MARKET_VALUE/1_000_000:.1f}M outside top leagues)")
+                print(f"  Filtered {before} -> {len(available_players)} players (min €{effective_min/1_000_000:.2f}M)")
+
+        # ── Advanced filter: league segmentation ─────────────────────────
+        if league_filter:
+            league_set = set(league_filter)
+            before = len(available_players)
+            available_players = [
+                p for p in available_players
+                if team_league_mapping.get(
+                    (p.team_id or "").strip(), {}
+                ).get(self.season, {}).get("league_id", "") in league_set
+            ]
+            if verbose:
+                print(f"  League filter {league_set}: {before} -> {len(available_players)}")
+
+        # ── Advanced filter: banned clubs ─────────────────────────────────
+        if banned_clubs:
+            banned_lower = {c.lower() for c in banned_clubs}
+            before = len(available_players)
+            available_players = [
+                p for p in available_players
+                if (p.team or "").lower() not in banned_lower
+            ]
+            if verbose:
+                print(f"  Banned clubs: {before} -> {len(available_players)}")
+
+        # ── Advanced filter: exclude top N clubs by market value ──────────
+        if exclude_top_n > 0 and self.team_market_values:
+            sorted_teams = sorted(
+                self.team_market_values.items(), key=lambda kv: kv[1], reverse=True
+            )
+            excluded = {name.lower() for name, _ in sorted_teams[:exclude_top_n]}
+            before = len(available_players)
+            available_players = [
+                p for p in available_players
+                if (p.team or "").lower() not in excluded
+            ]
+            if verbose:
+                print(f"  Excluded top {exclude_top_n} clubs: {before} -> {len(available_players)}")
 
         if verbose:
             print(f"  {len(available_players)} players available for signing")
@@ -1088,7 +1158,23 @@ class TransferSimulator:
                 available_players, verbose=verbose, _cache=pred_cache
             )
 
-        # ── Apply signing approach ───────────────────────────────────────
+        # ── Multi-year horizon: extrapolate 1-year prediction ─────────────
+        if horizon > 1:
+            from ml.value_predictor import clamp_prediction
+            for p in available_players:
+                mv = p.market_value or 1
+                pv = p.predicted_value or mv
+                annual_ratio = pv / mv if mv > 0 else 1.0
+                current = mv
+                for _ in range(horizon):
+                    projected = current * annual_ratio
+                    current = clamp_prediction(projected, current)
+                p.predicted_value = current
+            if verbose:
+                print(f"  Horizon {horizon}yr: extrapolated with per-year clamping")
+
+        # ── Apply signing approach (player filtering / weighting) ────────
+        import copy as _copy
         knapsack_players = available_players
         _remap_to_originals = False
 
@@ -1100,24 +1186,11 @@ class TransferSimulator:
             if verbose:
                 print(f"  Approach '{approach}': filtered to {len(knapsack_players)} players (age ≤ {max_age})")
 
-        elif approach == "max_profit":
-            import copy
-            _remap_to_originals = True
-            knapsack_players = []
-            for p in available_players:
-                pc = copy.copy(p)
-                profit = (p.predicted_value or 0) - (p.market_value or 0)
-                pc.predicted_value = max(0, profit)
-                knapsack_players.append(pc)
-            if verbose:
-                print(f"  Approach '{approach}': optimizing for expected profit")
-
         elif approach == "balanced":
-            import copy
             _remap_to_originals = True
             knapsack_players = []
             for p in available_players:
-                pc = copy.copy(p)
+                pc = _copy.copy(p)
                 age = p.age or 26
                 if 25 <= age <= 29:
                     factor = 1.15
@@ -1134,10 +1207,32 @@ class TransferSimulator:
             if verbose:
                 print(f"  Approach '{approach}': age-weighted predicted values")
 
+        # ── Apply optimisation objective ─────────────────────────────────
+        # Rewrites predicted_value so the knapsack maximises the right thing.
+        if objective != "smv":
+            _remap_to_originals = True
+            obj_players = []
+            for p in knapsack_players:
+                pc = _copy.copy(p)
+                pv = p.predicted_value or 0
+                mv = p.market_value or 1
+                if objective == "net_benefit":
+                    pc.predicted_value = max(0, pv - mv)
+                elif objective == "roi":
+                    pc.predicted_value = max(0, (pv - mv) / mv) * 1_000_000
+                elif objective == "value_growth":
+                    pc.predicted_value = max(0, pv - mv)
+                elif objective == "growth_pct":
+                    pc.predicted_value = max(0, pv / mv) * 1_000_000
+                obj_players.append(pc)
+            knapsack_players = obj_players
+            if verbose:
+                print(f"  Objective '{objective}': knapsack value rewritten")
+
         # ── Step 6/8: Knapsack optimisation ──────────────────────────────
         _progress(0.80, "step_knapsack")
         if verbose:
-            print(f"  Finding optimal signings...")
+            print(f"  Finding optimal signings (speed={sim_speed})...")
 
         if buy_counts:
             if "_formations" in buy_counts:
@@ -1167,6 +1262,7 @@ class TransferSimulator:
             formations=custom_formation,
             budget=total_budget * 1_000_000,
             use_predicted_value=True,
+            speed=sim_speed,
             verbose=1 if verbose else 0,
             unlimited_budget=unlimited_budget,
         )

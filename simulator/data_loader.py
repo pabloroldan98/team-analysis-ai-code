@@ -480,22 +480,34 @@ def enrich_players_with_predictions(
 ) -> List[Player]:
     """
     Enrich players with ML-predicted future values.
+
+    Tries segmented models first (better accuracy at extreme values),
+    then falls back to the global model.
     """
     try:
-        from ml.value_predictor import ValuePredictor, predict_player_values
+        from ml.value_predictor import (
+            ValuePredictor, SegmentedValuePredictor, predict_player_values,
+        )
     except ImportError:
         return players
 
-    if model_path is None:
-        model_path = ValuePredictor.get_latest_model()
-
-    if model_path is None or not model_path.exists():
-        return players
-
+    predictor = None
     try:
-        predictor = ValuePredictor(model_path)
+        seg = SegmentedValuePredictor(season)
+        if seg.is_trained:
+            predictor = seg
     except Exception:
-        return players
+        pass
+
+    if predictor is None:
+        if model_path is None:
+            model_path = ValuePredictor.get_latest_model()
+        if model_path is None or not model_path.exists():
+            return players
+        try:
+            predictor = ValuePredictor(model_path)
+        except Exception:
+            return players
 
     cutoff_date = _get_season_start_date(season)
 

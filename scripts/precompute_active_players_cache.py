@@ -42,7 +42,7 @@ from ml.feature_engineering import (
     build_prediction_dataset,
     load_team_league_mapping,
 )
-from ml.value_predictor import ValuePredictor, MODELS_DIR
+from ml.value_predictor import ValuePredictor, SegmentedValuePredictor, MODELS_DIR
 from valuation import Valuation
 
 # Re-use the constants from the simulator
@@ -186,7 +186,19 @@ def precompute_and_save(
         verbose=verbose,
     )
 
-    predictor = ValuePredictor(model_path)
+    predictor = None
+    try:
+        seg = SegmentedValuePredictor(season)
+        if seg.is_trained:
+            predictor = seg
+            if verbose:
+                segs = list(seg.segment_models.keys())
+                print(f"  Using segmented predictor with {len(segs)} segments: {segs}")
+    except Exception:
+        pass
+    if predictor is None:
+        predictor = ValuePredictor(model_path)
+
     predictions = predictor.predict_batch(features)
     pred_map = {f.player_id: pred for f, pred in zip(features, predictions)}
 
