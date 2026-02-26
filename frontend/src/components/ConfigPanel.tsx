@@ -278,7 +278,7 @@ function BuyCountsSelector({
     <div>
       <h3 className="section-title">{t(lang, "signings_per_position")}</h3>
       <div className="flex gap-2 mb-3">
-        {(["exact", "range", "total"] as BuyMode[]).map((m) => (
+        {(["total", "range", "exact"] as BuyMode[]).map((m) => (
           <button
             key={m}
             onClick={() => setBuyMode(m)}
@@ -787,7 +787,7 @@ export default function ConfigPanel({
   season, clubName,
 }: Props) {
   const [playersToSell, setPlayersToSell] = useState<string[]>([]);
-  const [buyMode, setBuyMode] = useState<BuyMode>("exact");
+  const [buyMode, setBuyMode] = useState<BuyMode>("total");
   const [exactCounts, setExactCounts] = useState<Record<string, number>>(
     { GK: 1, DEF: 1, MID: 1, ATT: 1 }
   );
