@@ -468,12 +468,23 @@ class ValuePredictor:
         """Get path to most recently saved model."""
         if not MODELS_DIR.exists():
             return None
-        
+
         models = list(MODELS_DIR.glob("value_model_*.joblib"))
         if not models:
             return None
-        
+
         return max(models, key=lambda p: p.stat().st_mtime)
+
+    @classmethod
+    def find_model_with_fallback(cls, season: str, max_fallback: int = 5) -> Optional[Path]:
+        """Find the model for *season*, falling back to previous seasons."""
+        start_year = int(season.split("-")[0])
+        for offset in range(max_fallback + 1):
+            yr = start_year - offset
+            path = MODELS_DIR / f"value_model_{yr}-{yr + 1}.joblib"
+            if path.exists():
+                return path
+        return None
 
 
 MAX_ANNUAL_GROWTH = {

@@ -97,6 +97,83 @@ def _load_athletic_eligible_ids(verbose: bool = False) -> Set[str]:
     return eligible
 
 
+def _get_previous_season(season: str) -> Optional[str]:
+    """Return the season string for the previous season, or None for 'today'."""
+    if season.lower() == "today":
+        now = datetime.now()
+        if now.month >= 7:
+            start = now.year
+        else:
+            start = now.year - 1
+        prev_start = start - 1
+        return f"{prev_start}-{prev_start + 1}"
+    start_year = int(season.split("-")[0])
+    prev_start = start_year - 1
+    return f"{prev_start}-{prev_start + 1}"
+
+
+def _compute_fair_prices(
+    season: str,
+    cutoff_date: datetime,
+    all_valuations: List,
+    team_league_mapping: Optional[Dict],
+    player_dict: Dict,
+    verbose: bool = False,
+) -> Dict[str, float]:
+    """
+    Fair price = what the previous season's model predicted for the current cutoff.
+
+    For season 2025-2026 we use the 2024-2025 model with features built at
+    2024-07-01 (prev season cutoff) to predict the value at ~2025-07-01.
+    If the previous model doesn't exist, falls back to the current season's model.
+    """
+    prev_season = _get_previous_season(season)
+    if prev_season is None:
+        return {}
+
+    prev_start_year = int(prev_season.split("-")[0])
+    prev_cutoff = datetime(prev_start_year, 7, 1)
+
+    prev_model_path = MODELS_DIR / f"value_model_{prev_season}.joblib"
+    if not prev_model_path.exists():
+        if verbose:
+            print(f"  ⚠ No previous model ({prev_model_path.name}), fair_price = predicted_value")
+        return {}
+
+    if verbose:
+        print(f"\n[4b] Computing fair prices with {prev_season} model (cutoff {prev_cutoff.strftime('%Y-%m-%d')})...")
+
+    prev_predictor = None
+    try:
+        seg = SegmentedValuePredictor(prev_season)
+        if seg.is_trained:
+            prev_predictor = seg
+            if verbose:
+                print(f"  Using segmented predictor ({prev_season})")
+    except Exception:
+        pass
+    if prev_predictor is None:
+        prev_predictor = ValuePredictor(prev_model_path)
+
+    prev_transfer_map, prev_by_player, prev_team_total_values = build_prediction_context(
+        all_valuations, prev_cutoff, verbose=verbose
+    )
+
+    prev_features = build_prediction_dataset(
+        all_valuations,
+        prev_cutoff,
+        players=player_dict,
+        team_league_mapping=team_league_mapping,
+        transfer_map=prev_transfer_map,
+        by_player=prev_by_player,
+        team_total_values=prev_team_total_values,
+        verbose=verbose,
+    )
+
+    prev_predictions = prev_predictor.predict_batch(prev_features)
+    return {f.player_id: pred for f, pred in zip(prev_features, prev_predictions)}
+
+
 def _get_cutoff_date(season: str, override_date: Optional[str] = None) -> datetime:
     """Return cutoff datetime for a season."""
     if season.lower() == "today":
@@ -129,11 +206,11 @@ def precompute_and_save(
     if season.lower() == "today":
         model_path = ValuePredictor.get_latest_model()
     else:
-        model_path = MODELS_DIR / f"value_model_{season}.joblib"
+        model_path = ValuePredictor.find_model_with_fallback(season)
 
     if model_path is None or not Path(model_path).exists():
         raise FileNotFoundError(
-            f"No model for season '{season}'. "
+            f"No model for season '{season}' (also checked previous seasons). "
             f"Run: python -m ml.train_pipeline --season {season}"
         )
 
@@ -187,15 +264,22 @@ def precompute_and_save(
     )
 
     predictor = None
-    try:
-        seg = SegmentedValuePredictor(season)
-        if seg.is_trained:
-            predictor = seg
-            if verbose:
-                segs = list(seg.segment_models.keys())
-                print(f"  Using segmented predictor with {len(segs)} segments: {segs}")
-    except Exception:
-        pass
+    # Try segmented models: exact season first, then fall back
+    seg_seasons = [season]
+    if season.lower() != "today":
+        start_yr = int(season.split("-")[0])
+        seg_seasons += [f"{start_yr - i}-{start_yr - i + 1}" for i in range(1, 6)]
+    for seg_s in seg_seasons:
+        try:
+            seg = SegmentedValuePredictor(seg_s)
+            if seg.is_trained:
+                predictor = seg
+                if verbose:
+                    segs = list(seg.segment_models.keys())
+                    print(f"  Using segmented predictor ({seg_s}) with {len(segs)} segments: {segs}")
+                break
+        except Exception:
+            continue
     if predictor is None:
         predictor = ValuePredictor(model_path)
 
@@ -207,6 +291,17 @@ def precompute_and_save(
 
     if verbose:
         print(f"  → Predicted values for {len(pred_map)} / {len(players)} players")
+
+    # ── 4b. Fair price (previous season's model → current cutoff) ─────
+    fair_price_map = _compute_fair_prices(
+        season, cutoff_date, all_valuations, team_league_mapping, player_dict, verbose
+    )
+    for p in players:
+        fp = fair_price_map.get(p.player_id)
+        p.fair_price = fp if fp is not None else p.predicted_value
+
+    if verbose:
+        print(f"  → Fair prices for {len(fair_price_map)} / {len(players)} players")
 
     # ── 5. Save ──────────────────────────────────────────────────────────
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -271,6 +366,10 @@ def main():
         help="Precompute for every season found in teams_all_*.json",
     )
     parser.add_argument(
+        "--include-next", action="store_true",
+        help="With --all-seasons, also compute the next future season (e.g. 2026-2027)",
+    )
+    parser.add_argument(
         "--date", type=str, default=None,
         help="Override 'today' date (YYYY-MM-DD). Passed from GitHub Actions.",
     )
@@ -282,12 +381,16 @@ def main():
     verbose = not args.quiet
 
     if args.all_seasons:
-        seasons = sorted(
-            {base.replace("teams_all_", "")
-             for base in list_json_bases("teams_all_*.json")
-             if base.startswith("teams_all_")},
-            reverse=True,
-        )
+        season_set = {
+            base.replace("teams_all_", "")
+            for base in list_json_bases("teams_all_*.json")
+            if base.startswith("teams_all_")
+        }
+        if args.include_next and season_set:
+            latest_start = max(int(s.split("-")[0]) for s in season_set)
+            nxt = latest_start + 1
+            season_set.add(f"{nxt}-{nxt + 1}")
+        seasons = sorted(season_set, reverse=True)
         if verbose:
             print(f"Precomputing {len(seasons)} seasons: {seasons}\n")
         for s in seasons:

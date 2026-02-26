@@ -17,8 +17,10 @@ export interface Player {
   nationality: string;
   market_value: number | null;
   predicted_value: number | null;
+  fair_price: number | null;
   img_url: string;
   on_loan: boolean;
+  alternatives?: Player[];
 }
 
 export interface SoldPlayer {
@@ -52,6 +54,7 @@ export interface SellRecommendation {
   age: number | null;
   market_value: number;
   predicted_value: number;
+  fair_price: number | null;
   decline: number;
   decline_pct: number;
   img_url: string;
@@ -63,7 +66,7 @@ export interface SellRecommendations {
 
 export type BuyMode = "exact" | "range" | "total";
 export type Approach = "max_value" | "young_talents" | "balanced";
-export type Objective = "smv" | "net_benefit" | "roi" | "value_growth" | "growth_pct";
+export type Objective = "smv" | "net_benefit" | "roi" | "growth_pct";
 export type SimSpeed = "local" | "fast" | "standard";
 
 export interface BuyCounts {
@@ -80,8 +83,7 @@ export interface League {
 export interface AdvancedFilters {
   leagueFilter: string[] | null;
   bannedClubs: string[] | null;
-  excludeTopN: number;
-  minMarketValue: number | null;
+  bannedPlayers: string[] | null;
   horizon: number;
 }
 

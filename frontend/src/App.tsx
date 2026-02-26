@@ -65,9 +65,11 @@ export default function App() {
   useEffect(() => {
     if (!season) return;
     api.getClubs(season).then((c) => {
-      setClubs(c);
-      if (c.length && !c.find((x) => x.name === clubName)) {
-        setClubName(c[0].name);
+      const sorted = [...c].sort((a, b) => a.name.localeCompare(b.name));
+      setClubs(sorted);
+      if (sorted.length && !sorted.find((x) => x.name === clubName)) {
+        const rm = sorted.find((x) => x.name === "Real Madrid");
+        setClubName(rm ? rm.name : sorted[0].name);
       }
     }).catch(console.error);
   }, [season]);

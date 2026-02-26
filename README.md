@@ -243,7 +243,7 @@ The positions vacated by sold players need to be filled. The user can configure 
 The simulator then:
 
 1. Takes all available players from the market (excluding the selling club's squad and sold players).
-2. **Applies advanced filters** (league, banned clubs, minimum value, etc.).
+2. **Applies advanced filters** (league, banned clubs, banned players, etc.).
 3. **Predicts their future value** using the ML model for that season.
 4. Applies the selected **optimization objective** to rewrite predicted values.
 5. Runs the **Grouped Knapsack algorithm** to find the optimal set of signings within budget.
@@ -309,6 +309,12 @@ The train/validation split is also **temporal**: older seasons go to training, t
 
 The model uses **XGBoost with native categorical support** for league, position, nationality, etc. At prediction time, if a category appears that was **not seen during training** (e.g. a new league like Serie B when the model was trained on older data), it is automatically mapped to `"Other"` to avoid `XGBoostError: category not in training set`. Newly trained models save their category mappings; older models use a conservative fallback set.
 
+#### Model Fallback for Future Seasons
+
+The system supports simulating **seasons for which no dedicated model exists** (e.g., 2026-2027). When a model for the requested season is not found, it automatically falls back to the most recent available model (tries N-1, N-2, etc., up to 5 seasons back). This applies to both global and segmented models, and works in both the precompute script and the on-the-fly prediction path.
+
+For example, simulating 2026-2027 with cutoff 01/07/2026 will use the 2025-2026 model if 2026-2027 hasn't been trained yet. Player data (market values, teams) is taken from the latest available valuations and transfers — since the data loader already filters by `date <= cutoff`, it naturally uses the most recent snapshot.
+
 #### Backward Compatibility
 
 Models trained before the v2 feature expansion (8 new features) still work. At prediction time, the predictor dynamically filters input features to match what the loaded model expects, adding defaults for any missing columns.
@@ -361,10 +367,12 @@ The LLM receives the full simulation context and produces a structured report wi
 
 #### Sell Recommendations
 
-Before the simulation, the system identifies players who may have reached their financial peak:
+Before the simulation, the system displays **all squad players** sorted by projected value change:
 
-- **Peak detection**: Players whose `predicted_value < market_value` (declining trajectory)
-- **Decline magnitude**: Sorted by absolute and percentage decline
+- **Full visibility**: All players are shown, sorted by decline magnitude (greatest drop first), so the user can see both declining and growing players at a glance
+- **Visual indicators**: Players losing value show a red ▼ with the decline amount; players gaining value show a green ▲
+- **Fair price**: Each player's fair price (from the previous season's model) is displayed alongside current and predicted values
+- **Select all declining**: A button to quickly select all players with negative projected value for sale
 - **Manual override**: Users can select exactly which players to sell from the recommendations, or pick any player from the squad
 
 #### Optimization Objectives
@@ -376,15 +384,13 @@ The knapsack optimizer can maximize different metrics depending on the user's st
 | **SMV** (Squad Market Value) | Total predicted value of signings | Building the most valuable squad |
 | **Net Benefit** | Predicted value − purchase cost | Maximizing absolute profit |
 | **ROI** | (Predicted − Cost) / Cost × 100 | Maximizing return percentage |
-| **Value Growth** | Predicted − Current market value | Maximizing absolute value increase |
 | **Growth %** | Predicted / Current value | Finding undervalued players |
 
 #### Advanced Filters
 
 - **League segmentation**: Restrict signings to specific leagues (e.g., only LaLiga and Premier League)
-- **Banned clubs**: Exclude specific clubs as signing sources (manual list)
-- **Exclude top N**: Automatically exclude the N richest clubs by total squad market value
-- **Minimum market value**: Set a floor for signing candidates (high-impact filter)
+- **Banned clubs**: Exclude specific clubs as signing sources (searchable dropdown with chip-based selection)
+- **Banned players**: Exclude specific players from recommendations (searchable dropdown with live search)
 - **Temporal horizon**: Optimize for 1, 2, or 3 years ahead (multi-year predictions via iterative extrapolation)
 
 #### xGrowth Ranking
@@ -399,9 +405,20 @@ For each recommended signing, the system finds **financially similar alternative
 - **Age similarity** (25%): How close are their ages
 - **xGrowth similarity** (40%): How similar is their predicted growth trajectory
 
+#### Signing Alternatives
+
+For each recommended signing, users can click to expand and see **5 alternative players**. These alternatives are drawn from the same pool of available players used during the simulation, filtered by:
+
+- **Same position** as the recommended player
+- **Market value ≤** the recommended player's value
+- **Sorted by the same optimization objective** (SMV, Net Benefit, ROI, Growth %) used in the simulation
+- **Excludes** players already in the recommended signings list
+
+This allows the user to quickly explore comparable options if a specific signing isn't feasible.
+
 #### Fair Purchase Price Estimation
 
-The **fair price** for a player is defined as their **predicted future value** — the break-even point for the buyer. If the market value is below the fair price, it's a bargain; if above, it's an overpay.
+The **fair price** for a player is computed using the **previous season's ML model** to predict the player's value at the current season's start date. For example, for the 2025-2026 season, the 2024-2025 model predicts what each player should be worth on 01/07/2025. This represents an independent "expected value" — if the current market value is below the fair price, the player is undervalued; if above, they're overvalued. When no previous model exists, the fair price falls back to the current model's prediction.
 
 #### Player Search
 
@@ -435,7 +452,7 @@ Deployed at:
 4. **Sell recommendations**: The system identifies players at their financial peak and recommends them for sale.
 5. **Select players to sell**: Multiselects grouped by position showing player name, position, and market value.
 6. **Optimization configuration**: Select objective (SMV, Net Benefit, ROI, etc.), simulation speed, and approach (max value, young talents, balanced).
-7. **Advanced filters**: League segmentation, banned clubs, top N exclusion, minimum value, temporal horizon.
+7. **Advanced filters**: League segmentation, banned clubs, banned players, temporal horizon.
 8. **Budget configuration**: Set transfer budget. Checkbox for unlimited budget mode.
 9. **Simulate**: Runs the full simulation.
 10. **Analytics**: xGrowth ranking, similar players analysis, and fair price assessment (in tabs).
@@ -664,11 +681,15 @@ Precomputing caches makes the app load instantly instead of spending minutes loa
 # All historical seasons (run once)
 python scripts/precompute_active_players_cache.py --all-seasons
 
+# All historical seasons + next future season (e.g., 2026-2027)
+python scripts/precompute_active_players_cache.py --all-seasons --include-next
+
 # Today's data
 python scripts/precompute_active_players_cache.py --season today
 
-# Specific season
+# Specific season (including future seasons like 2026-2027)
 python scripts/precompute_active_players_cache.py --season 2024-2025
+python scripts/precompute_active_players_cache.py --season 2026-2027
 ```
 
 #### Run the Streamlit App

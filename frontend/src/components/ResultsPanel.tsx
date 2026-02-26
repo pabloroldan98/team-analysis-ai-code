@@ -4,6 +4,70 @@ import { t, formatCurrency, POS_ORDER, POS_KEYS } from "../i18n";
 import PlayerCard from "./PlayerCard";
 import { api } from "../api";
 
+/* ── SigningWithAlternatives ───────────────────────────────────────────── */
+
+function SigningWithAlternatives({
+  lang, player,
+}: {
+  lang: Lang; player: Player;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const alts = player.alternatives ?? [];
+  const fpLabel = player.fair_price != null ? ` · ${t(lang, "fair_price")}: ${formatCurrency(player.fair_price)}` : "";
+  const detail = `${t(lang, POS_KEYS[player.position] || "pos_def")} · ${formatCurrency(player.market_value)} → ${formatCurrency(player.predicted_value)} ${t(lang, "predicted")}${fpLabel} · ${t(lang, "from_team", { team: player.team || "?" })}`;
+
+  return (
+    <div>
+      <div
+        className="cursor-pointer"
+        onClick={() => alts.length > 0 && setExpanded(!expanded)}
+      >
+        <PlayerCard
+          name={player.name}
+          imgUrl={player.img_url}
+          detail={detail}
+          variant="bought"
+        />
+        {alts.length > 0 && (
+          <div className="text-[10px] text-gray-400 -mt-1 mb-1 ml-14">
+            {expanded ? "▲" : "▼"} {alts.length} {lang === "es" ? "alternativas" : "alternatives"}
+          </div>
+        )}
+      </div>
+      {expanded && alts.length > 0 && (
+        <div className="ml-8 mb-3 border-l-2 border-primary/20 pl-3 space-y-1">
+          {alts.map((a) => (
+            <div
+              key={a.player_id}
+              className="flex items-center justify-between text-sm bg-gray-50 rounded-lg px-3 py-1.5"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {a.img_url ? (
+                  <img src={a.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-gray-200" />
+                )}
+                <span className="font-medium truncate">{a.name}</span>
+                <span className="text-xs text-gray-400">{a.team}</span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0 ml-2 text-xs">
+                <span className="text-gray-500">{formatCurrency(a.market_value)}</span>
+                <span className="text-gray-400">→</span>
+                <span className={`font-semibold ${(a.predicted_value ?? 0) >= (a.market_value ?? 0) ? "text-green-600" : "text-red-500"}`}>
+                  {formatCurrency(a.predicted_value)}
+                </span>
+                {a.fair_price != null && (
+                  <span className="text-gray-400">({t(lang, "fair_price")}: {formatCurrency(a.fair_price)})</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── MetricCard ─────────────────────────────────────────────────────────── */
 
 function MetricCard({
@@ -509,18 +573,9 @@ export default function ResultsPanel({ lang, result, clubs, squad }: Props) {
                   return `${t(lang, POS_KEYS[pos])}: ${count}`;
                 }).join(", ")}
               </p>
-              {result.recommended_signings.map((p) => {
-                const detail = `${t(lang, POS_KEYS[p.position] || "pos_def")} · ${formatCurrency(p.market_value)} → ${formatCurrency(p.predicted_value)} ${t(lang, "predicted")} · ${t(lang, "from_team", { team: p.team || "?" })}`;
-                return (
-                  <PlayerCard
-                    key={p.player_id}
-                    name={p.name}
-                    imgUrl={p.img_url}
-                    detail={detail}
-                    variant="bought"
-                  />
-                );
-              })}
+              {result.recommended_signings.map((p) => (
+                <SigningWithAlternatives key={p.player_id} lang={lang} player={p} />
+              ))}
             </>
           )}
         </div>

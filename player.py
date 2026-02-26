@@ -33,6 +33,7 @@ class Player:
         profile_url: str = "",
         season: str = "",
         predicted_value: float = None,
+        fair_price: float = None,
         on_loan: bool = False,
         loaning_team: str = "",
         loaning_team_id: str = "",
@@ -56,6 +57,7 @@ class Player:
         self.profile_url = profile_url
         self.season = season
         self.predicted_value = predicted_value  # ML-predicted future value
+        self.fair_price = fair_price  # value predicted by previous season's model
         self.on_loan = on_loan
         self.loaning_team = loaning_team  # team that owns the player (if on loan)
         self.loaning_team_id = loaning_team_id
@@ -156,9 +158,10 @@ class Player:
             "profile_url": self.profile_url,
             "season": self.season,
         }
-        # Only include predicted_value if set (ML feature)
         if self.predicted_value is not None:
             result["predicted_value"] = self.predicted_value
+        if self.fair_price is not None:
+            result["fair_price"] = self.fair_price
         if self.on_loan:
             result["on_loan"] = True
             result["loaning_team"] = self.loaning_team
@@ -188,6 +191,7 @@ class Player:
             profile_url=data.get("profile_url", ""),
             season=data.get("season", ""),
             predicted_value=data.get("predicted_value"),
+            fair_price=data.get("fair_price"),
             on_loan=data.get("on_loan", False),
             loaning_team=data.get("loaning_team", ""),
             loaning_team_id=data.get("loaning_team_id", ""),

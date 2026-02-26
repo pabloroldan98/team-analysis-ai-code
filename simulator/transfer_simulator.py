@@ -880,13 +880,10 @@ class TransferSimulator:
         """
         Get players available for signing (not in club).
 
-        **Young players (< 30)** — directional rule: only from teams
-        whose value <= buying club's value (+ ``TRANSFER_TIER_EXTENSION``).
-
-        **Veterans (>= 30)** — value-range rule: origin team value must
-        be between ``player_value × 10`` and ``player_value × 200``
-        (capped / floored at 1 B / 200 M).  This prevents veterans from
-        unrealistically large or small clubs being signed.
+        All players must come from a team in the *signable_teams* set
+        (teams whose total market value is at most slightly above the
+        buying club's value).  This prevents signing from clubs that are
+        unrealistically richer than the buying club, regardless of age.
 
         Excludes players from invalid origin teams (e.g. "Retired").
         If *is_athletic* is True (the buying club is Athletic Bilbao),
@@ -902,20 +899,9 @@ class TransferSimulator:
             if self._is_invalid_origin(p.team or ""):
                 continue
 
-            is_veteran = (p.age or 0) >= 30
             team_name = p.team or ""
-
-            if is_veteran:
-                mv = p.market_value or 0
-                if mv > 0:
-                    min_tv = min(mv * 10, 1_000_000_000)
-                    max_tv = max(mv * 200, 200_000_000)
-                    team_val = self.team_market_values.get(team_name, 0)
-                    if not (min_tv <= team_val <= max_tv):
-                        continue
-            else:
-                if team_name not in signable_teams:
-                    continue
+            if team_name not in signable_teams:
+                continue
 
             available.append(p)
 
@@ -980,6 +966,7 @@ class TransferSimulator:
         # ── Advanced filters ──────────────────────────────────────────
         league_filter: Optional[List[str]] = None,
         banned_clubs: Optional[List[str]] = None,
+        banned_players: Optional[List[str]] = None,
         exclude_top_n: int = 0,
         min_market_value: Optional[float] = None,
         horizon: int = 1,
@@ -1164,6 +1151,17 @@ class TransferSimulator:
             if verbose:
                 print(f"  Banned clubs: {before} -> {len(available_players)}")
 
+        # ── Advanced filter: banned players ───────────────────────────────
+        if banned_players:
+            banned_names_lower = {n.lower() for n in banned_players}
+            before = len(available_players)
+            available_players = [
+                p for p in available_players
+                if (p.name or "").lower() not in banned_names_lower
+            ]
+            if verbose:
+                print(f"  Banned players: {before} -> {len(available_players)}")
+
         # ── Advanced filter: exclude top N clubs by market value ──────────
         if exclude_top_n > 0 and self.team_market_values:
             sorted_teams = sorted(
@@ -1312,6 +1310,9 @@ class TransferSimulator:
             total_signing_cost = sum((p.market_value or 0) for p in recommended_signings) / 1_000_000
             total_predicted_value = sum((p.predicted_value or 0) for p in recommended_signings)
 
+        self._last_available_players = available_players
+        self._last_objective = objective
+
         result = TransferResult(
             club_name=self.club_name,
             season=self.season,
@@ -1339,6 +1340,53 @@ class TransferSimulator:
 
         _progress(1.0, "step_done")
         return result
+
+    def get_alternatives(
+        self,
+        signing: Player,
+        exclude_ids: Optional[set] = None,
+        n: int = 5,
+    ) -> List[Player]:
+        """Return up to *n* alternative players for a recommended signing.
+
+        Alternatives come from the pool of available players used in the
+        last ``run()`` call, filtered to:
+          - same position as *signing*
+          - market_value <= signing's market_value
+          - not in *exclude_ids* (other recommended signings)
+
+        Sorted by the same objective that was used in the simulation.
+        """
+        pool = getattr(self, "_last_available_players", None)
+        objective = getattr(self, "_last_objective", "smv")
+        if not pool:
+            return []
+
+        exclude = exclude_ids or set()
+        max_price = signing.market_value or 0
+
+        candidates = [
+            p for p in pool
+            if p.position == signing.position
+            and p.player_id not in exclude
+            and p.player_id != signing.player_id
+            and (p.market_value or 0) <= max_price
+            and (p.market_value or 0) > 0
+        ]
+
+        def _score(p: Player) -> float:
+            pv = p.predicted_value or 0
+            mv = p.market_value or 1
+            if objective == "net_benefit" or objective == "value_growth":
+                return pv - mv
+            elif objective == "roi":
+                return (pv - mv) / mv if mv > 0 else 0
+            elif objective == "growth_pct":
+                return pv / mv if mv > 0 else 0
+            return pv  # smv
+
+        candidates.sort(key=_score, reverse=True)
+        return candidates[:n]
 
 
 def main():

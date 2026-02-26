@@ -54,6 +54,7 @@ class PlayerOut(BaseModel):
     nationality: str = ""
     market_value: Optional[float] = None
     predicted_value: Optional[float] = None
+    fair_price: Optional[float] = None
     img_url: str = ""
     on_loan: bool = False
 
@@ -80,6 +81,7 @@ class SimulateRequest(BaseModel):
     # Advanced filters
     league_filter: Optional[List[str]] = None
     banned_clubs: Optional[List[str]] = None
+    banned_players: Optional[List[str]] = None
     exclude_top_n: int = 0
     min_market_value: Optional[float] = None
     horizon: int = 1
@@ -113,6 +115,7 @@ class SellRecommendation(BaseModel):
     age: Optional[int]
     market_value: float
     predicted_value: float
+    fair_price: Optional[float] = None
     decline: float
     decline_pct: float
     img_url: str = ""
@@ -217,6 +220,7 @@ def _player_to_out(p) -> PlayerOut:
         nationality=p.nationality or "",
         market_value=p.market_value,
         predicted_value=p.predicted_value,
+        fair_price=round(_compute_fair_price(p), 0),
         img_url=p.img_url or "",
         on_loan=p.on_loan or False,
     )
@@ -228,11 +232,18 @@ def _player_to_out(p) -> PlayerOut:
 
 @app.get("/api/seasons")
 def get_seasons() -> List[str]:
-    seasons = []
+    seasons: set[str] = set()
     for base in list_json_bases("teams_all_*.json"):
         s = base.replace("teams_all_", "")
-        if s and s not in seasons:
-            seasons.append(s)
+        if s:
+            seasons.add(s)
+    # Also include seasons that have precomputed caches (e.g. future seasons)
+    cache_dir = ROOT_DIR / "data" / "json" / "cache"
+    if cache_dir.exists():
+        for f in cache_dir.glob("season_data_*.json"):
+            s = f.stem.replace("season_data_", "")
+            if s and s != "today":
+                seasons.add(s)
     return sorted(seasons, reverse=True)
 
 
@@ -247,6 +258,13 @@ def get_clubs(season: str) -> List[ClubOut]:
     if base is None:
         return []
     data = load_json(base)
+    # Fallback to latest available teams file (for future seasons without own data)
+    if data is None or not isinstance(data, list):
+        bases = list_json_bases("teams_all_*.json")
+        base = bases[-1] if bases else None
+        if base is None:
+            return []
+        data = load_json(base)
     if data is None or not isinstance(data, list):
         return []
 
@@ -285,6 +303,12 @@ def get_leagues(season: str) -> List[LeagueOut]:
     if base is None:
         return []
     data = load_json(base)
+    if data is None or not isinstance(data, list):
+        bases = list_json_bases("teams_all_*.json")
+        base = bases[-1] if bases else None
+        if base is None:
+            return []
+        data = load_json(base)
     if data is None or not isinstance(data, list):
         return []
 
@@ -336,18 +360,18 @@ def sell_recommendations(club_name: str, season: str) -> SellRecommendationsOut:
         if pv is None or mv <= 0 or p.on_loan:
             continue
         delta = mv - pv
-        if delta > 0:
-            peak.append(SellRecommendation(
-                player_id=p.player_id,
-                name=p.name,
-                position=p.position or "N/A",
-                age=p.age,
-                market_value=mv,
-                predicted_value=pv,
-                decline=delta,
-                decline_pct=delta / mv,
-                img_url=p.img_url or "",
-            ))
+        peak.append(SellRecommendation(
+            player_id=p.player_id,
+            name=p.name,
+            position=p.position or "N/A",
+            age=p.age,
+            market_value=mv,
+            predicted_value=pv,
+            fair_price=round(_compute_fair_price(p), 0),
+            decline=delta,
+            decline_pct=delta / mv if mv else 0,
+            img_url=p.img_url or "",
+        ))
     peak.sort(key=lambda r: r.decline, reverse=True)
     return SellRecommendationsOut(peak_players=peak)
 
@@ -359,8 +383,8 @@ def _compute_xgrowth(p) -> float:
 
 
 def _compute_fair_price(p) -> float:
-    """Fair price = predicted_value (break-even point for the buyer)."""
-    return p.predicted_value or p.market_value or 0
+    """Fair price = previous season's model prediction, stored in p.fair_price."""
+    return getattr(p, "fair_price", None) or p.predicted_value or p.market_value or 0
 
 
 def _player_similarity(a, b) -> float:
@@ -508,10 +532,9 @@ def search_players(
             continue
         pv = p.predicted_value
         xg = None
-        fp = None
+        fp = round(_compute_fair_price(p), 0)
         if pv is not None and mv > 0:
             xg = round((pv / mv) - 1, 4)
-            fp = round(pv, 0)
         results.append(SearchPlayerOut(
             player_id=p.player_id,
             name=p.name,
@@ -575,6 +598,7 @@ def simulate(req: SimulateRequest) -> SimulationResultOut:
             sim_speed=req.sim_speed,
             league_filter=req.league_filter,
             banned_clubs=req.banned_clubs,
+            banned_players=req.banned_players,
             exclude_top_n=req.exclude_top_n,
             min_market_value=req.min_market_value,
             horizon=req.horizon,
@@ -612,7 +636,7 @@ def simulate(req: SimulateRequest) -> SimulationResultOut:
     )
 
 
-def _build_result_dict(result) -> dict:
+def _build_result_dict(result, sim=None) -> dict:
     """Serialize a TransferResult into the same shape as SimulationResultOut."""
     sold_out = []
     for sp in result.players_sold:
@@ -626,6 +650,18 @@ def _build_result_dict(result) -> dict:
             "was_sold": sp.was_sold,
             "img_url": p.img_url or "",
         })
+
+    signing_ids = {p.player_id for p in result.recommended_signings}
+    signings_out = []
+    for p in result.recommended_signings:
+        out = _player_to_out(p).model_dump()
+        if sim is not None:
+            alts = sim.get_alternatives(p, exclude_ids=signing_ids, n=5)
+            out["alternatives"] = [_player_to_out(a).model_dump() for a in alts]
+        else:
+            out["alternatives"] = []
+        signings_out.append(out)
+
     return {
         "club_name": result.club_name,
         "season": result.season,
@@ -634,7 +670,7 @@ def _build_result_dict(result) -> dict:
         "total_budget": result.total_budget,
         "players_sold": sold_out,
         "formation_needed": result.formation_needed,
-        "recommended_signings": [_player_to_out(p).model_dump() for p in result.recommended_signings],
+        "recommended_signings": signings_out,
         "recommended_formation": result.recommended_formation,
         "total_signing_cost": result.total_signing_cost,
         "total_predicted_value": result.total_predicted_value,
@@ -691,12 +727,13 @@ def simulate_stream(req: SimulateRequest):
                 sim_speed=req.sim_speed,
                 league_filter=req.league_filter,
                 banned_clubs=req.banned_clubs,
+                banned_players=req.banned_players,
                 exclude_top_n=req.exclude_top_n,
                 min_market_value=req.min_market_value,
                 horizon=req.horizon,
             )
             _last_result = result
-            q.put({"type": "result", "data": _build_result_dict(result)})
+            q.put({"type": "result", "data": _build_result_dict(result, sim=sim)})
         except Exception as exc:
             q.put({"type": "error", "detail": str(exc)})
         finally:

@@ -354,10 +354,13 @@ def get_active_players_at_season_start(
     age_iter = tqdm(active.values(), desc="Computing ages", disable=not verbose)
     for p in age_iter:
         if p.birth_date:
-            try:
-                bd = datetime.strptime(p.birth_date, "%Y-%m-%d")
-            except (ValueError, TypeError):
-                bd = None
+            bd = None
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+                try:
+                    bd = datetime.strptime(p.birth_date, fmt)
+                    break
+                except (ValueError, TypeError):
+                    continue
             if bd:
                 age = cutoff.year - bd.year
                 if (cutoff.month, cutoff.day) < (bd.month, bd.day):
@@ -472,6 +475,60 @@ def load_valuations(season: str, league: str = "all") -> List[Valuation]:
     return [Valuation.from_dict(v) for v in raw if isinstance(v, dict)]
 
 
+def _enrich_fair_prices(
+    players: List[Player],
+    valuations: List[Valuation],
+    season: str,
+) -> None:
+    """Set fair_price on each player using the previous season's model."""
+    try:
+        from ml.value_predictor import (
+            ValuePredictor, SegmentedValuePredictor, predict_player_values,
+        )
+    except ImportError:
+        return
+
+    if season.lower() == "today":
+        now = datetime.now()
+        start = now.year if now.month >= 7 else now.year - 1
+        prev_start = start - 1
+    else:
+        prev_start = int(season.split("-")[0]) - 1
+    prev_season = f"{prev_start}-{prev_start + 1}"
+
+    from ml.value_predictor import MODELS_DIR
+    prev_model_path = MODELS_DIR / f"value_model_{prev_season}.joblib"
+    if not prev_model_path.exists():
+        return
+
+    prev_predictor = None
+    try:
+        seg = SegmentedValuePredictor(prev_season)
+        if seg.is_trained:
+            prev_predictor = seg
+    except Exception:
+        pass
+    if prev_predictor is None:
+        try:
+            prev_predictor = ValuePredictor(prev_model_path)
+        except Exception:
+            return
+
+    prev_cutoff = datetime(prev_start, 7, 1)
+    prev_preds = predict_player_values(
+        valuations,
+        prev_cutoff,
+        prev_predictor,
+        players={p.player_id: p for p in players},
+    )
+    for p in players:
+        fp = prev_preds.get(p.player_id)
+        if fp is not None:
+            p.fair_price = fp
+        elif p.fair_price is None:
+            p.fair_price = p.predicted_value
+
+
 def enrich_players_with_predictions(
     players: List[Player],
     valuations: List[Valuation],
@@ -492,16 +549,23 @@ def enrich_players_with_predictions(
         return players
 
     predictor = None
-    try:
-        seg = SegmentedValuePredictor(season)
-        if seg.is_trained:
-            predictor = seg
-    except Exception:
-        pass
+    # Try segmented models: exact season first, then fall back
+    seg_seasons = [season]
+    if season.lower() != "today":
+        start_yr = int(season.split("-")[0])
+        seg_seasons += [f"{start_yr - i}-{start_yr - i + 1}" for i in range(1, 6)]
+    for seg_s in seg_seasons:
+        try:
+            seg = SegmentedValuePredictor(seg_s)
+            if seg.is_trained:
+                predictor = seg
+                break
+        except Exception:
+            continue
 
     if predictor is None:
         if model_path is None:
-            model_path = ValuePredictor.get_latest_model()
+            model_path = ValuePredictor.find_model_with_fallback(season) if season.lower() != "today" else ValuePredictor.get_latest_model()
         if model_path is None or not model_path.exists():
             return players
         try:
@@ -522,6 +586,9 @@ def enrich_players_with_predictions(
         pred_value = predictions.get(p.player_id)
         if pred_value is not None:
             p.predicted_value = pred_value
+
+    # Fair price via previous season's model
+    _enrich_fair_prices(players, valuations, season)
 
     return players
 
@@ -572,6 +639,24 @@ def load_season_cache(season: str, max_age_days: int = 1) -> Optional[dict]:
         return None
 
     players = [Player.from_dict(p) for p in players_raw if isinstance(p, dict)]
+
+    # Recalculate ages from birth_date to fix stale/incorrect values in cache
+    cutoff = _get_season_start_date(season)
+    for p in players:
+        if p.birth_date:
+            bd = None
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+                try:
+                    bd = datetime.strptime(p.birth_date, fmt)
+                    break
+                except (ValueError, TypeError):
+                    continue
+            if bd:
+                age = cutoff.year - bd.year
+                if (cutoff.month, cutoff.day) < (bd.month, bd.day):
+                    age -= 1
+                p.age = age
+
     team_market_values = raw.get("team_market_values", {})
     athletic_ids = set(raw.get("athletic_eligible_ids", []))
 
