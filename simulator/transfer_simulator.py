@@ -382,12 +382,13 @@ class TransferSimulator:
         if not self.predictor:
             self._load_predictor()
 
-        # Build features for prediction
+        # Build features for prediction using END of season cutoff
+        # (predicts value 1 year from end of season)
         if self.season.lower() == "today":
             cutoff_date = datetime.now()
         else:
             start_year = int(self.season.split("-")[0])
-            cutoff_date = datetime(start_year, 7, 1)
+            cutoff_date = datetime(start_year + 1, 7, 1)
 
         # Use cached context if provided (avoids duplicate load when called twice, e.g. sell-by-decline)
         if _cache is not None and _cache.get("cutoff_date") == cutoff_date:
@@ -689,6 +690,8 @@ class TransferSimulator:
         for player in club_players:
             if player.player_id not in ids_to_sell:
                 continue
+            if player.on_loan:
+                continue
             if player.position not in sales_per_position:
                 continue
             destination = self._find_destination_team(
@@ -895,6 +898,8 @@ class TransferSimulator:
         available = []
         for p in all_players:
             if p.player_id in club_ids:
+                continue
+            if p.on_loan:
                 continue
             if self._is_invalid_origin(p.team or ""):
                 continue
