@@ -242,7 +242,7 @@ The positions vacated by sold players need to be filled. The user can configure 
 
 The simulator then:
 
-1. Takes all available players from the market (excluding the selling club's squad and sold players).
+1. Takes all available players from the market (excluding the selling club's squad, sold players, and **on-loan players** — a player on loan belongs to another club and is not available for purchase).
 2. **Applies advanced filters** (league, banned clubs, banned players, etc.).
 3. **Predicts their future value** using the ML model for that season.
 4. Applies the selected **optimization objective** to rewrite predicted values.
@@ -273,9 +273,9 @@ Each row in the training dataset represents **one player at one point in time** 
 |----------|----------|
 | **Player attributes** | age, nationality (binned), height, preferred foot, position, positional versatility (num_positions) |
 | **Current value** | market value, log-scale value, club total value, league tier |
-| **Historical values** | value at 6m, 1y, 2y, 3y, 4y, 5y ago |
-| **Trends** | % change over 6m, 1y, 2y, 4y, 5y |
-| **Differences** | absolute change over 6m, 1y, 2y, 4y, 5y |
+| **Historical values** | value at 1y, 2y, 3y, 4y, 5y ago; last_valuation_date (decimal year) |
+| **Trends** | % change over 1y, 2y, 4y, 5y |
+| **Differences** | absolute change over 1y, 2y, 4y, 5y |
 | **Percentiles** | current value percentile, historical percentiles, diff/trend/pct percentiles |
 | **Derived** | value volatility (std/mean of recent values), value acceleration (trend change), peak ratio (current/max), age-value ratio |
 | **Contextual** | is_in_top_league, is_in_home_league, club bin (top 25 or "Other") |
@@ -315,9 +315,13 @@ The system supports simulating **seasons for which no dedicated model exists** (
 
 For example, simulating 2026-2027 with cutoff 01/07/2026 will use the 2025-2026 model if 2026-2027 hasn't been trained yet. Player data (market values, teams) is taken from the latest available valuations and transfers — since the data loader already filters by `date <= cutoff`, it naturally uses the most recent snapshot.
 
+#### Native NaN / Missing Value Support
+
+The model handles missing data natively via XGBoost's built-in NaN support. When a feature is genuinely unknown (e.g., no valuation 3 years ago, unknown height, unknown age), it is stored as `NaN` rather than a misleading default like `0.0`. XGBoost learns the optimal split direction for missing values during training, which is more accurate than imputing arbitrary defaults.
+
 #### Backward Compatibility
 
-Models trained before the v2 feature expansion (8 new features) still work. At prediction time, the predictor dynamically filters input features to match what the loaded model expects, adding defaults for any missing columns.
+Models trained before the v2 feature expansion (8 new features) still work. At prediction time, the predictor dynamically filters input features to match what the loaded model expects, filling any missing columns with `NaN`.
 
 ---
 
@@ -371,7 +375,7 @@ Before the simulation, the system displays **all squad players** sorted by proje
 
 - **Full visibility**: All players are shown, sorted by decline magnitude (greatest drop first), so the user can see both declining and growing players at a glance
 - **Visual indicators**: Players losing value show a red ▼ with the decline amount; players gaining value show a green ▲
-- **Fair price**: Each player's fair price (from the previous season's model) is displayed alongside current and predicted values
+- **Fair price**: Each player's fair price (linear extrapolation from their last two valuations) is displayed alongside current and predicted values
 - **Select all declining**: A button to quickly select all players with negative projected value for sale
 - **Manual override**: Users can select exactly which players to sell from the recommendations, or pick any player from the squad
 
@@ -419,7 +423,9 @@ This allows the user to quickly explore comparable options if a specific signing
 
 #### Fair Purchase Price Estimation
 
-The **fair price** for a player is computed using a **previous season's ML model** to predict the player's value at the current season's start date. For example, for the 2025-2026 season, the 2024-2025 model predicts what each player should be worth on 01/07/2025. This represents an independent "expected value" — if the current market value is below the fair price, the player is undervalued; if above, they're overvalued. The system walks backwards up to 10 seasons to find an available model; if none is found, it raises an error.
+The **fair price** is a simple, model-independent estimate computed via **linear extrapolation** from the player's last two valuations before the season's cutoff date. It takes the two most recent `(date, value)` points, fits a line, and evaluates it at the cutoff. This gives a "trend-based expected value" — if the current market value is above the fair price, the player may be overvalued relative to their trajectory; if below, they're undervalued. The result is clamped to [0, €250M]. If only one valuation exists, that value is used directly; if none exist, fair price is not set.
+
+This is distinct from `predicted_value`, which uses the full ML model with 60+ features. The fair price provides a lightweight sanity check based purely on the player's valuation trend.
 
 #### Player Search
 
