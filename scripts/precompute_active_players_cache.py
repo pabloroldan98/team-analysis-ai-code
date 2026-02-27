@@ -40,10 +40,13 @@ from simulator.data_loader import get_active_players_at_season_start
 from ml.feature_engineering import (
     build_prediction_context,
     build_prediction_dataset,
+    compute_fair_prices,
     load_team_league_mapping,
+    _load_all_transfers,
 )
 from ml.value_predictor import ValuePredictor, SegmentedValuePredictor, MODELS_DIR
 from valuation import Valuation
+from transfer import Transfer
 
 # Re-use the constants from the simulator
 from simulator.transfer_simulator import ATHLETIC_FAMILY_IDS, ATHLETIC_FAMILY_NAMES
@@ -74,26 +77,19 @@ def _calculate_team_market_values(players) -> Dict[str, float]:
     return team_values
 
 
-def _load_athletic_eligible_ids(verbose: bool = False) -> Set[str]:
-    """Scan transfer files for players who have been at an Athletic-family club."""
+def _extract_athletic_eligible_ids(all_transfers: List[Transfer]) -> Set[str]:
+    """Extract Athletic-eligible player IDs from already-loaded Transfer objects."""
     eligible: Set[str] = set()
-    bases = list(list_json_bases("transfers_all_*.json"))
-    for base in tqdm(bases, desc="Athletic eligibility scan", disable=not verbose):
-        data = load_json(base)
-        if not isinstance(data, list):
-            continue
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            from_id = str(item.get("from_club_id", "") or "")
-            from_name = (item.get("from_club_name") or item.get("from_club", "") or "").lower()
-            to_id = str(item.get("to_club_id", "") or "")
-            to_name = (item.get("to_club_name") or item.get("to_club", "") or "").lower()
-            if (from_id in ATHLETIC_FAMILY_IDS or from_name in ATHLETIC_FAMILY_NAMES
-                    or to_id in ATHLETIC_FAMILY_IDS or to_name in ATHLETIC_FAMILY_NAMES):
-                pid = item.get("player_id", "")
-                if pid:
-                    eligible.add(str(pid))
+    for t in all_transfers:
+        from_id = str(t.from_club_id or "")
+        from_name = (t.from_club_name or "").lower()
+        to_id = str(t.to_club_id or "")
+        to_name = (t.to_club_name or "").lower()
+        if (from_id in ATHLETIC_FAMILY_IDS or from_name in ATHLETIC_FAMILY_NAMES
+                or to_id in ATHLETIC_FAMILY_IDS or to_name in ATHLETIC_FAMILY_NAMES):
+            pid = t.player_id
+            if pid:
+                eligible.add(str(pid))
     return eligible
 
 
@@ -110,69 +106,6 @@ def _get_previous_season(season: str) -> Optional[str]:
     start_year = int(season.split("-")[0])
     prev_start = start_year - 1
     return f"{prev_start}-{prev_start + 1}"
-
-
-def _compute_fair_prices(
-    season: str,
-    cutoff_date: datetime,
-    all_valuations: List,
-    team_league_mapping: Optional[Dict],
-    player_dict: Dict,
-    verbose: bool = False,
-) -> Dict[str, float]:
-    """
-    Fair price = the current season's model re-predicting at the same cutoff.
-
-    Uses the same features the predicted_value was computed with, so fair_price
-    will be very close to predicted_value.  Falls back to the previous season's
-    model only when the current season's model does not exist.
-    """
-    # Try current season model first, then previous
-    model_season = season
-    model_path = MODELS_DIR / f"value_model_{season}.joblib"
-    if not model_path.exists():
-        prev = _get_previous_season(season)
-        if prev is None:
-            return {}
-        model_path = MODELS_DIR / f"value_model_{prev}.joblib"
-        model_season = prev
-        if not model_path.exists():
-            if verbose:
-                print(f"  ⚠ No model for {season} or {prev}, fair_price = predicted_value")
-            return {}
-
-    if verbose:
-        print(f"\n[4b] Computing fair prices with {model_season} model (cutoff {cutoff_date.strftime('%Y-%m-%d')})...")
-
-    predictor = None
-    try:
-        seg = SegmentedValuePredictor(model_season)
-        if seg.is_trained:
-            predictor = seg
-            if verbose:
-                print(f"  Using segmented predictor ({model_season})")
-    except Exception:
-        pass
-    if predictor is None:
-        predictor = ValuePredictor(model_path)
-
-    transfer_map, by_player, team_total_values = build_prediction_context(
-        all_valuations, cutoff_date, verbose=verbose
-    )
-
-    features = build_prediction_dataset(
-        all_valuations,
-        cutoff_date,
-        players=player_dict,
-        team_league_mapping=team_league_mapping,
-        transfer_map=transfer_map,
-        by_player=by_player,
-        team_total_values=team_total_values,
-        verbose=verbose,
-    )
-
-    predictions = predictor.predict_batch(features)
-    return {f.player_id: pred for f, pred in zip(features, predictions)}
 
 
 def _get_cutoff_date(season: str, override_date: Optional[str] = None) -> datetime:
@@ -236,12 +169,13 @@ def precompute_and_save(
     if verbose:
         print(f"  → {len(team_market_values)} teams")
 
-    # ── 3. Athletic eligible IDs ─────────────────────────────────────────
+    # ── 3. Load transfers once (shared by Athletic scan + prediction context)
     if verbose:
-        print("\n[3/5] Scanning Athletic-family eligibility...")
-    athletic_eligible_ids = _load_athletic_eligible_ids(verbose=verbose)
+        print("\n[3/5] Loading transfers + Athletic eligibility (single pass)...")
+    all_transfers = _load_all_transfers(verbose=verbose)
+    athletic_eligible_ids = _extract_athletic_eligible_ids(all_transfers)
     if verbose:
-        print(f"  → {len(athletic_eligible_ids)} eligible players")
+        print(f"  → {len(all_transfers)} transfers, {len(athletic_eligible_ids)} Athletic-eligible players")
 
     # ── 4. ML predictions ────────────────────────────────────────────────
     if verbose:
@@ -249,7 +183,7 @@ def precompute_and_save(
     all_valuations = _load_all_valuations(verbose=verbose)
     team_league_mapping = load_team_league_mapping(verbose=verbose)
     transfer_map, by_player, team_total_values = build_prediction_context(
-        all_valuations, cutoff_date, verbose=verbose
+        all_valuations, cutoff_date, all_transfers=all_transfers, verbose=verbose
     )
 
     player_dict = {p.player_id: p for p in players}
@@ -293,13 +227,14 @@ def precompute_and_save(
     if verbose:
         print(f"  → Predicted values for {len(pred_map)} / {len(players)} players")
 
-    # ── 4b. Fair price (previous season's model → current cutoff) ─────
-    fair_price_map = _compute_fair_prices(
-        season, cutoff_date, all_valuations, team_league_mapping, player_dict, verbose
-    )
+    # ── 4b. Fair price (linear extrapolation from last 2 valuations) ───
+    if verbose:
+        print(f"\n[4b] Computing fair prices (linear extrapolation, cutoff {cutoff_date.strftime('%Y-%m-%d')})...")
+    fair_price_map = compute_fair_prices(by_player, cutoff_date)
     for p in players:
         fp = fair_price_map.get(p.player_id)
-        p.fair_price = fp if fp is not None else p.predicted_value
+        if fp is not None:
+            p.fair_price = fp
 
     if verbose:
         print(f"  → Fair prices for {len(fair_price_map)} / {len(players)} players")

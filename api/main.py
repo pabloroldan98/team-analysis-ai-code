@@ -23,6 +23,9 @@ from pydantic import BaseModel
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
+from dotenv import load_dotenv
+load_dotenv(ROOT_DIR / ".env")
+
 from scraping.utils.helpers import list_json_bases, load_json
 from webapp.i18n import format_currency
 
@@ -186,7 +189,7 @@ class SearchResults(BaseModel):
     total: int
 
 class AISummaryRequest(BaseModel):
-    api_key: str
+    api_key: str = ""
     language: str = "es"
 
 # ---------------------------------------------------------------------------
@@ -403,8 +406,11 @@ def _compute_xgrowth(p) -> float:
 
 
 def _compute_fair_price(p) -> float:
-    """Fair price = previous season's model prediction, stored in p.fair_price."""
-    return getattr(p, "fair_price", None) or p.predicted_value or p.market_value or 0
+    """Fair price from linear extrapolation, stored in p.fair_price by precompute."""
+    fp = getattr(p, "fair_price", None)
+    if fp is not None:
+        return min(250_000_000, max(0, fp))
+    return p.predicted_value or p.market_value or 0
 
 
 def _player_similarity(a, b) -> float:
@@ -522,8 +528,13 @@ class XGrowthResults(BaseModel):
     ranges: XGrowthRanges = XGrowthRanges()
 
 
-def _get_horizon_pv(sim, season: str, horizon: int) -> Dict[str, float]:
-    """Return {player_id: extrapolated_predicted_value} for given horizon.
+def _get_horizon_pv(sim, season: str, horizon: int) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Return ({player_id: predicted_value}, {player_id: fair_price}) for horizon.
+
+    For horizon=1: predicted_value comes from precomputed player data;
+                   fair_price comes from precomputed player data.
+    For horizon>1: predicted_value is chained ML predictions;
+                   fair_price is linear extrapolation to the horizon cutoff.
 
     Caches results so repeated xGrowth requests with the same season+horizon
     don't recompute.
@@ -532,26 +543,144 @@ def _get_horizon_pv(sim, season: str, horizon: int) -> Dict[str, float]:
     if cache_key in _xgrowth_horizon_cache:
         return _xgrowth_horizon_cache[cache_key]
 
+    from copy import copy
     from ml.value_predictor import clamp_prediction
+    from ml.feature_engineering import (
+        build_prediction_context,
+        build_prediction_dataset,
+        compute_fair_prices,
+        load_team_league_mapping,
+        _compute_trend,
+        _compute_pct,
+        _compute_diff,
+    )
+    from datetime import datetime
+    import numpy as _np
 
-    mapping: Dict[str, float] = {}
-    for p in sim.all_players:
-        pv_raw = p.predicted_value
-        mv = p.market_value or 0
-        if pv_raw is None or mv <= 0:
-            continue
-        if horizon <= 1:
-            mapping[p.player_id] = pv_raw
-        else:
-            annual_ratio = pv_raw / mv if mv > 0 else 1.0
-            current = mv
-            for _ in range(horizon):
-                projected = current * annual_ratio
-                current = clamp_prediction(projected, current)
-            mapping[p.player_id] = current
+    # Horizon 1: just return existing values
+    if horizon <= 1:
+        pv_map: Dict[str, float] = {}
+        fp_map: Dict[str, float] = {}
+        for p in sim.all_players:
+            if p.predicted_value is not None and (p.market_value or 0) > 0:
+                pv_map[p.player_id] = p.predicted_value
+            fp = getattr(p, "fair_price", None)
+            if fp is not None:
+                fp_map[p.player_id] = fp
+        result = (pv_map, fp_map)
+        _xgrowth_horizon_cache[cache_key] = result
+        return result
 
-    _xgrowth_horizon_cache[cache_key] = mapping
-    return mapping
+    # Build features using END of season cutoff (same as predicted_value)
+    if season.lower() == "today":
+        cutoff_date = datetime.now()
+    else:
+        start_year = int(season.split("-")[0])
+        cutoff_date = datetime(start_year + 1, 7, 1)
+
+    predictor = sim.predictor
+    if not predictor:
+        sim._load_predictor()
+        predictor = sim.predictor
+
+    all_valuations = sim._load_all_valuations(verbose=False)
+    team_league_mapping = load_team_league_mapping(verbose=False)
+    transfer_map, by_player, team_total_values = build_prediction_context(
+        all_valuations, cutoff_date, verbose=False
+    )
+
+    player_dict = {p.player_id: p for p in sim.all_players
+                   if (p.market_value or 0) > 0}
+    base_features = build_prediction_dataset(
+        all_valuations, cutoff_date,
+        players=player_dict,
+        team_league_mapping=team_league_mapping,
+        transfer_map=transfer_map,
+        by_player=by_player,
+        team_total_values=team_total_values,
+        verbose=False,
+    )
+    if not base_features:
+        result = ({}, {})
+        _xgrowth_horizon_cache[cache_key] = result
+        return result
+
+    # Year 1 predictions
+    preds_y1 = predictor.predict_batch(base_features)
+    feat_by_id = {}
+    for feat, pred in zip(base_features, preds_y1):
+        mv = feat.current_value
+        clamped = clamp_prediction(pred, mv)
+        feat_by_id[feat.player_id] = (feat, clamped)
+
+    # Chain for years 2..horizon
+    current_features = feat_by_id
+    for year_offset in range(1, horizon):
+        next_features_list = []
+        player_ids_order = []
+        july_year = cutoff_date.year + year_offset
+        new_last_val_num = july_year + (7 - 1) / 12.0
+
+        for pid, (feat, prev_pred) in current_features.items():
+            nf = copy(feat)
+            old_cv = nf.current_value
+
+            nf.current_value = prev_pred
+            nf.last_valuation_date_num = new_last_val_num
+            nf.age = nf.age + 1.0
+
+            nf.value_5y_ago = nf.value_4y_ago
+            nf.value_4y_ago = nf.value_3y_ago
+            nf.value_3y_ago = nf.value_2y_ago
+            nf.value_2y_ago = nf.value_1y_ago
+            nf.value_1y_ago = old_cv
+
+            nf.trend_1y = _compute_trend(nf.current_value, nf.value_1y_ago)
+            nf.trend_2y = _compute_trend(nf.current_value, nf.value_2y_ago)
+            nf.trend_4y = _compute_trend(nf.current_value, nf.value_4y_ago)
+            nf.trend_5y = _compute_trend(nf.current_value, nf.value_5y_ago)
+
+            nf.pct_1y = _compute_pct(nf.current_value, nf.value_1y_ago)
+            nf.pct_2y = _compute_pct(nf.current_value, nf.value_2y_ago)
+            nf.pct_4y = _compute_pct(nf.current_value, nf.value_4y_ago)
+            nf.pct_5y = _compute_pct(nf.current_value, nf.value_5y_ago)
+
+            nf.diff_1y = _compute_diff(nf.current_value, nf.value_1y_ago)
+            nf.diff_2y = _compute_diff(nf.current_value, nf.value_2y_ago)
+            nf.diff_4y = _compute_diff(nf.current_value, nf.value_4y_ago)
+            nf.diff_5y = _compute_diff(nf.current_value, nf.value_5y_ago)
+
+            nf.value_acceleration = nf.trend_1y - nf.trend_2y
+            nf.max_value = max(nf.max_value, nf.current_value)
+            nf.peak_ratio = nf.current_value / max(nf.max_value, 1.0)
+            nf.log_current_value = float(_np.log10(max(nf.current_value, 1.0)))
+            if _np.isnan(nf.age):
+                nf.age_value_ratio = float("nan")
+            else:
+                age_sq = max(nf.age, 1.0) ** 2
+                nf.age_value_ratio = (nf.current_value / 1_000_000) / (age_sq / 100.0) if age_sq > 0 else 0.0
+            nf.num_valuations += 1
+            nf.months_of_history += 12
+
+            next_features_list.append(nf)
+            player_ids_order.append(pid)
+
+        preds = predictor.predict_batch(next_features_list)
+        new_current = {}
+        for pid, nf, pred in zip(player_ids_order, next_features_list, preds):
+            clamped = clamp_prediction(pred, nf.current_value)
+            new_current[pid] = (nf, clamped)
+        current_features = new_current
+
+    pv_map = {pid: pred for pid, (_, pred) in current_features.items()}
+
+    # Fair prices: extrapolate to the horizon's final cutoff
+    horizon_cutoff = datetime(cutoff_date.year + horizon - 1, cutoff_date.month, cutoff_date.day)
+    fp_map = compute_fair_prices(by_player, horizon_cutoff)
+
+    result = (pv_map, fp_map)
+    _xgrowth_horizon_cache[cache_key] = result
+    return result
 
 
 @app.get("/api/xgrowth")
@@ -640,8 +769,8 @@ def get_xgrowth(
         from ml.feature_engineering import load_team_league_mapping
         team_league_map = load_team_league_mapping()
 
-    # Horizon-extrapolated predicted values
-    horizon_pv = _get_horizon_pv(sim, season, horizon)
+    # Horizon-extrapolated predicted values and fair prices
+    horizon_pv, horizon_fp = _get_horizon_pv(sim, season, horizon)
 
     club_ids = {p.player_id for p in sim.club_players}
     min_mv_euros = (min_market_value or 0) * 1_000_000
@@ -696,6 +825,9 @@ def get_xgrowth(
 
         pool.append(p)
 
+    def _fp(p):
+        return horizon_fp.get(p.player_id, _compute_fair_price(p))
+
     def _metrics(p):
         mv = p.market_value or 0
         pv = horizon_pv.get(p.player_id, p.predicted_value or mv)
@@ -732,7 +864,7 @@ def get_xgrowth(
         nbs = [m[2] for m in all_metrics]
         rois = [m[3] for m in all_metrics]
         gps = [m[4] for m in all_metrics]
-        fps = [_compute_fair_price(p) for p in pool]
+        fps = [_fp(p) for p in pool]
         ranges = XGrowthRanges(
             age=[min(ages) if ages else 15, max(ages) if ages else 45],
             market_value=[min(mvs), max(mvs)],
@@ -749,7 +881,7 @@ def get_xgrowth(
     filtered = []
     for p in pool:
         pv, xg, nb, roi_v, gp_v = _metrics(p)
-        fp = _compute_fair_price(p)
+        fp = _fp(p)
         age = p.age or 0
         mv = p.market_value or 0
         if position and (p.position or "") != position:
@@ -783,8 +915,9 @@ def get_xgrowth(
         filtered.append(p)
 
     total = len(filtered)
+    subset = filtered[:limit] if limit > 0 else filtered
     results = []
-    for p in filtered[:limit]:
+    for p in subset:
         mv = p.market_value or 1
         pv, xg, nb, roi_v, gp_v = _metrics(p)
         results.append(XGrowthPlayer(
@@ -796,7 +929,7 @@ def get_xgrowth(
             market_value=p.market_value or 0,
             predicted_value=round(pv, 0),
             xgrowth=round(xg, 4),
-            fair_price=round(_compute_fair_price(p), 0),
+            fair_price=round(_fp(p), 0),
             net_benefit=round(nb, 0),
             roi=round(roi_v, 4),
             growth_pct=round(gp_v, 4),
@@ -910,7 +1043,7 @@ def simulate(req: SimulateRequest):
             verbose=False,
             generate_summary=False,
             unlimited_budget=req.unlimited,
-            players_to_sell=req.players_to_sell or None,
+            players_to_sell=req.players_to_sell if req.players_to_sell is not None else None,
             buy_counts=buy_counts,
             approach=req.approach,
             objective=req.objective,
@@ -1017,7 +1150,7 @@ def simulate_stream(req: SimulateRequest):
                 generate_summary=False,
                 progress_callback=on_progress,
                 unlimited_budget=req.unlimited,
-                players_to_sell=req.players_to_sell or None,
+                players_to_sell=req.players_to_sell if req.players_to_sell is not None else None,
                 buy_counts=buy_counts,
                 approach=req.approach,
                 objective=req.objective,
@@ -1054,20 +1187,34 @@ def ai_summary(req: AISummaryRequest) -> Dict[str, str]:
         raise HTTPException(status_code=400, detail="No simulation result available")
 
     k = (req.api_key or "").strip()
-    if k.startswith("sk-ant-"):
-        provider = "anthropic"
-    elif k.startswith("sk-"):
-        provider = "openai"
+    if k:
+        if k.startswith("sk-ant-"):
+            provider = "anthropic"
+        elif k.startswith("sk-"):
+            provider = "openai"
+        else:
+            provider = "gemini"
     else:
-        provider = "gemini"
+        provider = os.getenv("LLM_PROVIDER", "openai")
+        env_keys = {
+            "openai": os.getenv("OPENAI_API_KEY", ""),
+            "anthropic": os.getenv("ANTHROPIC_API_KEY", ""),
+            "gemini": os.getenv("GEMINI_API_KEY", ""),
+        }
+        k = env_keys.get(provider, "") or ""
+        if not k:
+            raise HTTPException(status_code=400, detail="No API key provided and none configured in .env")
 
-    summary = _last_result.generate_llm_summary(
-        provider=provider,
-        api_key=req.api_key,
-        language=req.language,
-    )
+    try:
+        summary = _last_result.generate_llm_summary(
+            provider=provider,
+            api_key=k,
+            language=req.language,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LLM error ({provider}): {exc}")
     if not summary:
-        raise HTTPException(status_code=500, detail="Failed to generate summary")
+        raise HTTPException(status_code=500, detail=f"LLM returned empty response (provider={provider})")
 
     return {"summary": summary}
 

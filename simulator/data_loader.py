@@ -480,66 +480,25 @@ def _enrich_fair_prices(
     valuations: List[Valuation],
     season: str,
 ) -> None:
-    """Set fair_price using the current season's model (fallback: previous)."""
-    try:
-        from ml.value_predictor import (
-            ValuePredictor, SegmentedValuePredictor, predict_player_values,
-        )
-    except ImportError:
-        return
+    """Set fair_price via linear extrapolation from the last 2 valuations <= cutoff.
 
-    from ml.value_predictor import MODELS_DIR
-
-    if season.lower() == "today":
-        now = datetime.now()
-        start = now.year if now.month >= 7 else now.year - 1
-    else:
-        start = int(season.split("-")[0])
+    Groups valuations by player, then delegates to
+    ``feature_engineering.compute_fair_prices``.
+    """
+    from collections import defaultdict
+    from ml.feature_engineering import compute_fair_prices
 
     cutoff = _get_season_start_date(season)
 
-    # Walk backwards from current season until a model is found
-    model_path = None
-    model_season = None
-    for offset in range(0, 10):
-        s = start - offset
-        candidate_season = f"{s}-{s + 1}"
-        candidate_path = MODELS_DIR / f"value_model_{candidate_season}.joblib"
-        if candidate_path.exists():
-            model_season = candidate_season
-            model_path = candidate_path
-            break
-    if model_path is None or model_season is None:
-        raise FileNotFoundError(
-            f"No value model found for season {season} or any of the 10 preceding seasons "
-            f"in {MODELS_DIR}"
-        )
+    by_player: Dict[str, List[Valuation]] = defaultdict(list)
+    for v in valuations:
+        by_player[v.player_id].append(v)
 
-    predictor = None
-    try:
-        seg = SegmentedValuePredictor(model_season)
-        if seg.is_trained:
-            predictor = seg
-    except Exception:
-        pass
-    if predictor is None:
-        try:
-            predictor = ValuePredictor(model_path)
-        except Exception:
-            return
-
-    preds = predict_player_values(
-        valuations,
-        cutoff,
-        predictor,
-        players={p.player_id: p for p in players},
-    )
+    fp_map = compute_fair_prices(by_player, cutoff)
     for p in players:
-        fp = preds.get(p.player_id)
+        fp = fp_map.get(p.player_id)
         if fp is not None:
             p.fair_price = fp
-        elif p.fair_price is None:
-            p.fair_price = p.predicted_value
 
 
 def enrich_players_with_predictions(
@@ -586,11 +545,19 @@ def enrich_players_with_predictions(
         except Exception:
             return players
 
-    cutoff_date = _get_season_start_date(season)
+    # fair_price uses START of season cutoff (01/07/YYYY)
+    _enrich_fair_prices(players, valuations, season)
+
+    # predicted_value uses END of season cutoff (01/07/(YYYY+1))
+    if season.lower() == "today":
+        pred_cutoff = datetime.now()
+    else:
+        start_year = int(season.split("-")[0])
+        pred_cutoff = datetime(start_year + 1, 7, 1)
 
     predictions = predict_player_values(
         valuations,
-        cutoff_date,
+        pred_cutoff,
         predictor,
         players={p.player_id: p for p in players},
     )
@@ -599,8 +566,6 @@ def enrich_players_with_predictions(
         pred_value = predictions.get(p.player_id)
         if pred_value is not None:
             p.predicted_value = pred_value
-
-    _enrich_fair_prices(players, valuations, season)
 
     return players
 
