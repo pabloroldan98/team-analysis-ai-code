@@ -97,6 +97,9 @@ export interface XGrowthPlayer {
   predicted_value: number;
   xgrowth: number;
   fair_price: number;
+  net_benefit: number;
+  roi: number;
+  growth_pct: number;
   img_url: string;
 }
 
@@ -140,4 +143,21 @@ export interface SearchPlayer {
 export interface SearchResults {
   players: SearchPlayer[];
   total: number;
+}
+
+export interface XGrowthRanges {
+  age: [number, number];
+  market_value: [number, number];
+  predicted_value: [number, number];
+  fair_price: [number, number];
+  xgrowth: [number, number];
+  net_benefit: [number, number];
+  roi: [number, number];
+  growth_pct: [number, number];
+}
+
+export interface XGrowthResults {
+  players: XGrowthPlayer[];
+  total: number;
+  ranges: XGrowthRanges;
 }

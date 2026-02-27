@@ -22,6 +22,55 @@ const SIM_SPEEDS: SimSpeed[] = ["local", "fast", "standard"];
 
 /* ── sub-components ─────────────────────────────────────────────────────── */
 
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = curr;
+  }
+  return prev[n];
+}
+
+const NORM_RE = /[\u0300-\u036f]/g;
+function norm(s: string) { return s.normalize("NFD").replace(NORM_RE, "").toLowerCase(); }
+
+function clubMatchScore(query: string, clubName: string): number {
+  const q = norm(query);
+  const t = norm(clubName);
+
+  // Full name starts with query → best
+  if (t.startsWith(q)) return -2;
+
+  const tWords = t.split(/\s+/).filter(Boolean);
+
+  // Any word starts with query → very good
+  if (tWords.some((w) => w.startsWith(q))) return -1;
+
+  // Substring anywhere in name
+  if (t.includes(q)) return 0;
+
+  // Per-word fuzzy matching
+  const qWords = q.split(/\s+/).filter(Boolean);
+  let total = 0;
+  for (const qw of qWords) {
+    let best = Infinity;
+    for (const tw of tWords) {
+      if (tw.startsWith(qw)) { best = -1; break; }
+      if (tw.includes(qw)) { best = 0; break; }
+      if (qw.length >= 3 && Math.abs(qw.length - tw.length) <= 2)
+        best = Math.min(best, levenshtein(qw, tw));
+    }
+    total += best;
+  }
+  return total;
+}
+
 function ClubSearchSelect({
   clubs, value, onChange,
 }: {
@@ -29,46 +78,76 @@ function ClubSearchSelect({
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setEditing(false);
+        setQuery("");
+      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  }, [open]);
 
   const filtered = query
-    ? clubs.filter((c) => c.name.toLowerCase().includes(query.toLowerCase()))
+    ? clubs
+        .map((c) => ({ club: c, score: clubMatchScore(query, c.name) }))
+        .filter(({ score }) => score <= 2)
+        .sort((a, b) => a.score - b.score)
+        .map(({ club }) => club)
     : clubs;
+
+  const handleFocus = () => {
+    setOpen(true);
+    setEditing(true);
+    setQuery("");
+  };
+
+  const handleSelect = (name: string) => {
+    onChange(name);
+    setOpen(false);
+    setEditing(false);
+    setQuery("");
+    inputRef.current?.blur();
+  };
 
   return (
     <div ref={ref} className="relative">
       <input
+        ref={inputRef}
         type="text"
         className="input-field w-full"
-        placeholder={value || "Search..."}
-        value={open ? query : value}
-        onFocus={() => { setOpen(true); setQuery(""); }}
+        placeholder="Search..."
+        value={editing ? query : value}
+        onFocus={handleFocus}
         onChange={(e) => setQuery(e.target.value)}
       />
       {open && (
         <ul className="absolute z-40 mt-1 w-full max-h-60 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg">
-          {filtered.length === 0 && (
-            <li className="px-3 py-2 text-sm text-gray-400">—</li>
-          )}
-          {filtered.map((c) => (
-            <li
-              key={c.name}
-              onClick={() => { onChange(c.name); setOpen(false); setQuery(""); }}
-              className={`px-3 py-2 text-sm cursor-pointer hover:bg-primary/10 ${
-                c.name === value ? "bg-primary/5 font-semibold text-primary-dark" : ""
-              }`}
-            >
-              {c.name}
+          {filtered.length === 0 ? (
+            <li className="px-3 py-2 text-sm text-gray-400 italic">
+              No results
             </li>
-          ))}
+          ) : (
+            filtered.map((c) => (
+              <li
+                key={c.name}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSelect(c.name)}
+                className={`px-3 py-2 text-sm cursor-pointer hover:bg-primary/10 ${
+                  c.name === value ? "bg-primary/5 font-semibold text-primary-dark" : ""
+                }`}
+              >
+                {c.name}
+              </li>
+            ))
+          )}
         </ul>
       )}
     </div>
@@ -107,6 +186,55 @@ function SeasonClubSelector({
   );
 }
 
+function SellRecList({
+  lang, items, selected, onToggle,
+}: {
+  lang: Lang; items: SellRecommendation[]; selected: string[];
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+      {items.map((r) => {
+        const isSelected = selected.includes(r.player_id);
+        const posKey = POS_KEYS[r.position] ?? "pos_def";
+        return (
+          <button
+            key={r.player_id}
+            onClick={() => onToggle(r.player_id)}
+            className={`w-full flex items-center justify-between text-left px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              isSelected
+                ? "bg-red-50 border border-red-200"
+                : "bg-gray-50 border border-transparent hover:bg-gray-100"
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`font-medium truncate ${isSelected ? "text-red-700" : ""}`}>
+                {r.name}
+              </span>
+              <span className="text-xs text-gray-400">
+                {t(lang, posKey)}, {r.age ?? "?"}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 ml-2">
+              <span className="text-xs text-gray-500">
+                {formatCurrency(r.market_value)} → {formatCurrency(r.predicted_value)}
+              </span>
+              {r.fair_price != null && (
+                <span className="text-[10px] text-gray-400">
+                  {t(lang, "fair_price")}: {formatCurrency(r.fair_price)}
+                </span>
+              )}
+              <span className="text-xs font-semibold text-red-600">
+                ▼ {formatCurrency(r.decline)} ({(r.decline_pct * 100).toFixed(0)}%)
+              </span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function SellRecommendationsPanel({
   lang,
   recommendations,
@@ -122,6 +250,8 @@ function SellRecommendationsPanel({
   onToggle: (id: string) => void;
   onSelectAll: (ids: string[]) => void;
 }) {
+  const [tab, setTab] = useState<"peak" | "decline">("peak");
+
   if (loading) {
     return (
       <div className="text-xs text-gray-400 animate-pulse py-2">
@@ -130,73 +260,71 @@ function SellRecommendationsPanel({
     );
   }
 
-  if (!recommendations.length) return null;
+  const peakPlayers = recommendations.filter((r) => r.decline > 0);
+  const topDecline = [...peakPlayers].sort((a, b) => b.decline - a.decline).slice(0, 5);
 
-  const decliningIds = recommendations.filter((r) => r.decline > 0).map((r) => r.player_id);
+  if (!peakPlayers.length && !topDecline.length) return null;
+
+  const currentList = tab === "peak" ? peakPlayers : topDecline;
+  const currentIds = currentList.map((r) => r.player_id);
+
+  const handleSelectAll = () => {
+    const newIds = currentIds.filter((id) => !selected.includes(id));
+    if (newIds.length > 0) onSelectAll([...selected, ...newIds]);
+  };
+
+  const handleDeselectAll = () => {
+    onSelectAll(selected.filter((id) => !currentIds.includes(id)));
+  };
+
+  const hasAnySelected = currentIds.some((id) => selected.includes(id));
 
   return (
     <div>
       <h3 className="section-title">{t(lang, "sell_recommendations")}</h3>
       <p className="text-xs text-gray-500 mb-3">{t(lang, "sell_rec_help")}</p>
 
-      {decliningIds.length > 0 && (
-        <button
-          onClick={() => {
-            const newIds = decliningIds.filter((id) => !selected.includes(id));
-            if (newIds.length > 0) onSelectAll([...selected, ...newIds]);
-          }}
-          className="text-xs text-primary hover:text-primary-dark underline mb-2"
-        >
-          {t(lang, "sell_rec_select_all")}
-        </button>
-      )}
-
-      <div className="space-y-1 max-h-80 overflow-y-auto pr-1">
-        {recommendations.map((r) => {
-          const isSelected = selected.includes(r.player_id);
-          const posKey = POS_KEYS[r.position] ?? "pos_def";
-          const isDeclining = r.decline > 0;
-          return (
-            <button
-              key={r.player_id}
-              onClick={() => onToggle(r.player_id)}
-              className={`w-full flex items-center justify-between text-left px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                isSelected
-                  ? "bg-red-50 border border-red-200"
-                  : "bg-gray-50 border border-transparent hover:bg-gray-100"
-              }`}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className={`font-medium truncate ${isSelected ? "text-red-700" : ""}`}>
-                  {r.name}
-                </span>
-                <span className="text-xs text-gray-400">
-                  {t(lang, posKey)}, {r.age ?? "?"}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 shrink-0 ml-2">
-                <span className="text-xs text-gray-500">
-                  {formatCurrency(r.market_value)} → {formatCurrency(r.predicted_value)}
-                </span>
-                {r.fair_price != null && (
-                  <span className="text-[10px] text-gray-400">
-                    {t(lang, "fair_price")}: {formatCurrency(r.fair_price)}
-                  </span>
-                )}
-                {isDeclining ? (
-                  <span className="text-xs font-semibold text-red-600">
-                    ▼ {formatCurrency(r.decline)} ({(r.decline_pct * 100).toFixed(0)}%)
-                  </span>
-                ) : (
-                  <span className="text-xs font-semibold text-green-600">
-                    ▲ {formatCurrency(Math.abs(r.decline))} ({(Math.abs(r.decline_pct) * 100).toFixed(0)}%)
-                  </span>
-                )}
-              </div>
-            </button>
-          );
-        })}
+      <div className="flex gap-2 mb-3">
+        {(["peak", "decline"] as const).map((key) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`chip ${tab === key ? "chip-active" : "chip-inactive"}`}
+          >
+            {t(lang, `sell_rec_${key}`)}
+          </button>
+        ))}
       </div>
+
+      <p className="text-[11px] text-gray-400 mb-2">
+        {t(lang, tab === "peak" ? "sell_rec_peak_desc" : "sell_rec_decline_desc")}
+      </p>
+
+      {currentList.length === 0 ? (
+        <p className="text-xs text-gray-400 italic">
+          {t(lang, tab === "peak" ? "sell_rec_no_peak" : "sell_rec_no_decline")}
+        </p>
+      ) : (
+        <>
+          <div className="flex gap-3 mb-2">
+            <button
+              onClick={handleSelectAll}
+              className="text-xs text-primary hover:text-primary-dark underline"
+            >
+              {t(lang, tab === "peak" ? "sell_rec_select_all_peak" : "sell_rec_select_all_decline")}
+            </button>
+            {hasAnySelected && (
+              <button
+                onClick={handleDeselectAll}
+                className="text-xs text-gray-500 hover:text-red-600 underline"
+              >
+                {t(lang, "sell_rec_deselect_all")}
+              </button>
+            )}
+          </div>
+          <SellRecList lang={lang} items={currentList} selected={selected} onToggle={onToggle} />
+        </>
+      )}
     </div>
   );
 }
@@ -246,10 +374,10 @@ function SellSelection({
                     className={`chip ${active ? "chip-active" : "chip-inactive"}`}
                   >
                     {p.name}
-                    <span className="opacity-70 text-[10px]">
+                    <span className={`text-[10px] ${active ? "opacity-80" : "opacity-70"}`}>
                       {formatCurrency(mv)}
                     </span>
-                    <span className={`text-[10px] ${growing ? "text-green-600" : "text-red-500"}`}>
+                    <span className={`text-[10px] ${active ? "text-white/80" : growing ? "text-green-600" : "text-red-500"}`}>
                       → {formatCurrency(pv)}
                     </span>
                   </button>
@@ -494,12 +622,13 @@ function SearchableMultiSelect({
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!open) return;
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  }, [open]);
 
   const available = items.filter(
     (item) =>
@@ -543,6 +672,7 @@ function SearchableMultiSelect({
           {available.slice(0, 30).map((item) => (
             <li
               key={keyFn(item)}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 onChange([...selected, keyFn(item)]);
                 setQuery("");
@@ -576,12 +706,13 @@ function PlayerSearchMultiSelect({
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
+    if (!open) return;
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     if (query.length < 2) { setResults([]); return; }
@@ -632,6 +763,7 @@ function PlayerSearchMultiSelect({
           {available.map((name) => (
             <li
               key={name}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 onChange([...selected, name]);
                 setQuery("");
@@ -779,12 +911,13 @@ interface Props {
   simulating: boolean;
   season: string;
   clubName: string;
+  hideSimConfig?: boolean;
 }
 
 export default function ConfigPanel({
   lang, seasons, clubs, squad, loadingSquad,
   onSeasonChange, onClubChange, onLoadSquad, onSimulate, simulating,
-  season, clubName,
+  season, clubName, hideSimConfig = false,
 }: Props) {
   const [playersToSell, setPlayersToSell] = useState<string[]>([]);
   const [buyMode, setBuyMode] = useState<BuyMode>("total");
@@ -811,12 +944,12 @@ export default function ConfigPanel({
   const [loadingRecs, setLoadingRecs] = useState(false);
 
   useEffect(() => {
-    if (!season) return;
+    if (hideSimConfig || !season) return;
     api.getLeagues(season).then(setLeagues).catch(() => setLeagues([]));
-  }, [season]);
+  }, [hideSimConfig, season]);
 
   useEffect(() => {
-    if (!squad || !clubName || !season) {
+    if (hideSimConfig || !squad || !clubName || !season) {
       setSellRecs([]);
       return;
     }
@@ -826,7 +959,7 @@ export default function ConfigPanel({
       .then((res) => setSellRecs(res.peak_players))
       .catch(() => setSellRecs([]))
       .finally(() => setLoadingRecs(false));
-  }, [squad, clubName, season]);
+  }, [hideSimConfig, squad, clubName, season]);
 
   const buildBuyCounts = (): BuyCounts | null => {
     if (buyMode === "exact") {
@@ -880,7 +1013,7 @@ export default function ConfigPanel({
         <p className="text-xs text-gray-400">{t(lang, "load_data_hint")}</p>
       )}
 
-      {squad && (
+      {squad && !hideSimConfig && (
         <>
           <div className="bg-secondary-light text-primary-dark text-sm font-medium px-4 py-2 rounded-lg border border-secondary/30">
             {t(lang, "data_loaded")} — {t(lang, "squad_loaded", { count: squad.length })}
