@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import type { Lang, League, SearchPlayer, XGrowthPlayer, XGrowthRanges } from "../types";
 import { t, formatCurrency, POS_ORDER, POS_KEYS } from "../i18n";
 import { api } from "../api";
@@ -266,9 +266,8 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
   const [selectedNationalities, setSelectedNationalities] = useState<string[]>([]);
   const [includeSecondNat, setIncludeSecondNat] = useState(false);
   const [excludeTopN, setExcludeTopN] = useState("");
-  const [sortBy, setSortBy] = useState<SortKey>("xgrowth");
+  const [sortBy, setSortBy] = useState<SortKey>("net_benefit");
   const [availableNationalities, setAvailableNationalities] = useState<string[]>([]);
-  const [natQuery, setNatQuery] = useState("");
 
   // Slider / light filters (trigger debounced server re-fetch)
   const [position, setPosition] = useState("");
@@ -284,16 +283,9 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
 
   const [advOpen, setAdvOpen] = useState(false);
   const [allPlayers, setAllPlayers] = useState<XGrowthPlayer[]>([]);
-  const [ranges, setRanges] = useState<XGrowthRanges>(DEFAULT_RANGES);
-  const [serverTotal, setServerTotal] = useState(0);
+  const [globalRanges, setGlobalRanges] = useState<XGrowthRanges>(DEFAULT_RANGES);
   const [loading, setLoading] = useState(false);
   const rangesInitRef = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const suppressSliderFetch = useRef(false);
-  const sliderMountRef = useRef(true);
-
-  const sliderRef = useRef({ position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp });
-  sliderRef.current = { position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp };
 
   const heavyRef = useRef({ season, onlyAvailable, clubName, horizon, selectedLeagues, selectedNationalities, includeSecondNat, excludeTopN, sortBy });
   heavyRef.current = { season, onlyAvailable, clubName, horizon, selectedLeagues, selectedNationalities, includeSecondNat, excludeTopN, sortBy };
@@ -313,7 +305,6 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
   const fetchPlayers = useCallback(async (initRanges: boolean) => {
     setLoading(true);
     const h = heavyRef.current;
-    const s = sliderRef.current;
     try {
       const res = await api.getXGrowth({
         season: h.season || undefined,
@@ -324,28 +315,17 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
         includeSecondNationality: h.includeSecondNat || undefined,
         excludeTopN: h.excludeTopN ? Number(h.excludeTopN) : undefined,
         sortBy: h.sortBy,
-        limit: 50,
-        position: s.position || undefined,
-        teamQuery: s.teamQuery || undefined,
-        fAgeMin: s.fAge[0], fAgeMax: s.fAge[1],
-        fMvMin: s.fMv[0], fMvMax: s.fMv[1],
-        fPvMin: s.fPv[0], fPvMax: s.fPv[1],
-        fFpMin: s.fFp[0], fFpMax: s.fFp[1],
-        fXgMin: s.fXg, fNbMin: s.fNb,
-        fRoiMin: s.fRoi, fGpMin: s.fGp,
+        limit: 0,
       });
       setAllPlayers(res.players);
-      setServerTotal(res.total);
       if (res.ranges) {
-        setRanges(res.ranges);
         if (initRanges) {
-          suppressSliderFetch.current = true;
+          setGlobalRanges(res.ranges);
           resetSliders(res.ranges);
         }
       }
     } catch {
       setAllPlayers([]);
-      setServerTotal(0);
     } finally {
       setLoading(false);
     }
@@ -353,22 +333,32 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
 
   // Heavy filter changes → immediate fetch
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
     const init = !rangesInitRef.current;
     rangesInitRef.current = true;
     fetchPlayers(init);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [season, onlyAvailable, clubName, horizon, selectedLeagues, selectedNationalities, includeSecondNat, excludeTopN, sortBy]);
 
-  // Slider filter changes → debounced fetch (skip initial render + range resets)
-  useEffect(() => {
-    if (sliderMountRef.current) { sliderMountRef.current = false; return; }
-    if (suppressSliderFetch.current) { suppressSliderFetch.current = false; return; }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchPlayers(false), 350);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp]);
+  // Client-side filtering by sliders, position and team query
+  const filteredPlayers = useMemo(() => {
+    const tq = teamQuery.toLowerCase().trim();
+    return allPlayers.filter((p) => {
+      if (position && p.position !== position) return false;
+      if (tq && !p.team.toLowerCase().includes(tq)) return false;
+      const age = p.age ?? 0;
+      if (age < fAge[0] || age > fAge[1]) return false;
+      if (p.market_value < fMv[0] || p.market_value > fMv[1]) return false;
+      if (p.predicted_value < fPv[0] || p.predicted_value > fPv[1]) return false;
+      if (p.fair_price < fFp[0] || p.fair_price > fFp[1]) return false;
+      if (p.xgrowth < fXg) return false;
+      if (p.net_benefit < fNb) return false;
+      if (p.roi < fRoi) return false;
+      if (p.growth_pct < fGp) return false;
+      return true;
+    });
+  }, [allPlayers, position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp]);
+
+  const displayResults = filteredPlayers.slice(0, 50);
 
   const toggleLeague = (id: string) => {
     setSelectedLeagues((prev) =>
@@ -386,13 +376,12 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
     api.getNationalities().then(setAvailableNationalities).catch(() => {});
   }, []);
 
-  const displayResults = allPlayers;
   const sortLabels = SORT_LABELS[lang] || SORT_LABELS.en;
   const fmtM = (v: number) => formatCurrency(v);
   const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
   const fmtPctInf = (v: number, sign = false) =>
-    Math.abs(v) >= 99 ? (v > 0 ? "∞" : "-∞") : `${sign && v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
-  const r = ranges;
+    !isFinite(v) || Math.abs(v) >= 9000 ? (v > 0 ? "∞" : "-∞") : `${sign && v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
+  const r = globalRanges;
 
   return (
     <div>
@@ -490,24 +479,22 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
             {/* Nationality filter */}
             {availableNationalities.length > 0 && (
               <div>
-                <label className="block text-xs font-medium mb-1">
-                  {lang === "es" ? "Nacionalidad" : "Nationality"}
-                </label>
-                <input
-                  className="input-field mb-1.5"
-                  placeholder={lang === "es" ? "Buscar nacionalidad..." : "Search nationality..."}
-                  value={natQuery}
-                  onChange={(e) => setNatQuery(e.target.value)}
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-medium">
+                    {lang === "es" ? "Nacionalidad" : "Nationality"}
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none text-[10px] text-gray-500">
+                    <input
+                      type="checkbox"
+                      checked={includeSecondNat}
+                      onChange={(e) => setIncludeSecondNat(e.target.checked)}
+                      className="w-3 h-3 accent-primary rounded"
+                    />
+                    {lang === "es" ? "Incluir 2ª nacionalidad" : "Include 2nd nationality"}
+                  </label>
+                </div>
                 <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                  {(natQuery.trim()
-                    ? availableNationalities.filter((n) =>
-                        n.toLowerCase().includes(natQuery.toLowerCase().trim()),
-                      )
-                    : selectedNationalities.length
-                      ? availableNationalities.filter((n) => selectedNationalities.includes(n))
-                      : availableNationalities
-                  ).map((nat) => {
+                  {availableNationalities.map((nat) => {
                     const active = selectedNationalities.includes(nat);
                     return (
                       <button
@@ -520,17 +507,6 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
                     );
                   })}
                 </div>
-                {selectedNationalities.length > 0 && (
-                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs mt-2">
-                    <input
-                      type="checkbox"
-                      checked={includeSecondNat}
-                      onChange={(e) => setIncludeSecondNat(e.target.checked)}
-                      className="w-3.5 h-3.5 accent-primary rounded"
-                    />
-                    {lang === "es" ? "Incluir segunda nacionalidad" : "Include second nationality"}
-                  </label>
-                )}
               </div>
             )}
 
@@ -621,8 +597,7 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
       ) : (
         <>
           <p className="text-xs text-gray-500 mb-2">
-            <strong>{allPlayers.length}</strong>
-            {allPlayers.length < serverTotal && ` / ${serverTotal}`} {t(lang, "xgrowth_total")}
+            <strong>{filteredPlayers.length}</strong> / {allPlayers.length} {t(lang, "xgrowth_total")}
           </p>
           {displayResults.length > 0 && (
             <div className="overflow-x-auto">

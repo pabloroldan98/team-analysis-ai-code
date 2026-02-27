@@ -78,16 +78,14 @@ function ClubSearchSelect({
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
-        setEditing(false);
         setQuery("");
       }
     };
@@ -95,51 +93,38 @@ function ClubSearchSelect({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const filtered = query
-    ? clubs
-        .map((c) => ({ club: c, score: clubMatchScore(query, c.name) }))
-        .filter(({ score }) => score <= 2)
-        .sort((a, b) => a.score - b.score)
-        .map(({ club }) => club)
-    : clubs;
-
-  const handleFocus = () => {
-    setOpen(true);
-    setEditing(true);
-    setQuery("");
-  };
-
-  const handleSelect = (name: string) => {
-    onChange(name);
-    setOpen(false);
-    setEditing(false);
-    setQuery("");
-    inputRef.current?.blur();
-  };
+  const filtered = clubs.filter((c) =>
+    c.name.toLowerCase().includes(query.toLowerCase()),
+  );
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={containerRef} className="relative">
       <input
         ref={inputRef}
         type="text"
-        className="input-field w-full"
+        className="input-field text-sm w-full"
         placeholder="Search..."
-        value={editing ? query : value}
-        onFocus={handleFocus}
-        onChange={(e) => setQuery(e.target.value)}
+        value={open ? query : value}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
       />
-      {open && (
+      {open && query.length > 0 && (
         <ul className="absolute z-40 mt-1 w-full max-h-60 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg">
           {filtered.length === 0 ? (
             <li className="px-3 py-2 text-sm text-gray-400 italic">
               No results
             </li>
           ) : (
-            filtered.map((c) => (
+            filtered.slice(0, 30).map((c) => (
               <li
                 key={c.name}
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => handleSelect(c.name)}
+                onClick={() => {
+                  onChange(c.name);
+                  setQuery("");
+                  setOpen(false);
+                  inputRef.current?.blur();
+                }}
                 className={`px-3 py-2 text-sm cursor-pointer hover:bg-primary/10 ${
                   c.name === value ? "bg-primary/5 font-semibold text-primary-dark" : ""
                 }`}
@@ -363,23 +348,29 @@ function SellSelection({
             </div>
             <div className="flex flex-wrap gap-1.5">
               {players.map((p) => {
-                const active = selected.includes(p.player_id);
+                const loan = p.on_loan;
+                const active = !loan && selected.includes(p.player_id);
                 const mv = p.market_value ?? 0;
                 const pv = p.predicted_value ?? mv;
                 const growing = pv >= mv;
                 return (
                   <button
                     key={p.player_id}
-                    onClick={() => toggle(p.player_id)}
-                    className={`chip ${active ? "chip-active" : "chip-inactive"}`}
+                    onClick={() => !loan && toggle(p.player_id)}
+                    disabled={loan}
+                    className={`chip ${loan ? "chip-inactive opacity-40 cursor-not-allowed" : active ? "chip-active" : "chip-inactive"}`}
+                    title={loan ? t(lang, "on_loan_not_available") : undefined}
                   >
                     {p.name}
+                    {loan && <span className="text-[10px] italic opacity-70">({t(lang, "on_loan_label")})</span>}
                     <span className={`text-[10px] ${active ? "opacity-80" : "opacity-70"}`}>
                       {formatCurrency(mv)}
                     </span>
-                    <span className={`text-[10px] ${active ? "text-white/80" : growing ? "text-green-600" : "text-red-500"}`}>
-                      → {formatCurrency(pv)}
-                    </span>
+                    {!loan && (
+                      <span className={`text-[10px] ${active ? "text-white/80" : growing ? "text-green-600" : "text-red-500"}`}>
+                        → {formatCurrency(pv)}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -931,7 +922,7 @@ export default function ConfigPanel({
   const [budget, setBudget] = useState(0);
   const [unlimited, setUnlimited] = useState(false);
   const [approach, setApproach] = useState<Approach>("max_value");
-  const [objective, setObjective] = useState<Objective>("smv");
+  const [objective, setObjective] = useState<Objective>("net_benefit");
   const [simSpeed, setSimSpeed] = useState<SimSpeed>("standard");
   const [filters, setFilters] = useState<AdvancedFilters>({
     leagueFilter: null,

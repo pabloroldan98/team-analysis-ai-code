@@ -3,9 +3,10 @@ interface Props {
   imgUrl: string;
   detail: string;
   variant: "sold" | "bought";
+  team?: string;
 }
 
-export default function PlayerCard({ name, imgUrl, detail, variant }: Props) {
+export default function PlayerCard({ name, imgUrl, detail, variant, team }: Props) {
   const arrowColor = variant === "sold" ? "text-red-500" : "text-green-500";
   const arrow = variant === "sold" ? "↓" : "↑";
 
@@ -26,6 +27,7 @@ export default function PlayerCard({ name, imgUrl, detail, variant }: Props) {
       <div className="min-w-0 flex-1">
         <div className="font-semibold text-sm truncate">
           {name}
+          {team && <span className="ml-1.5 text-xs text-gray-400 font-normal">{team}</span>}
           <span className={`ml-1.5 font-bold ${arrowColor}`}>{arrow}</span>
         </div>
         <div className="text-xs text-gray-400 truncate">{detail}</div>

@@ -51,7 +51,7 @@ export default function App() {
 
   const [seasons, setSeasons] = useState<string[]>([]);
   const [clubs, setClubs] = useState<Club[]>([]);
-  const [season, setSeason] = useState("today");
+  const [season, setSeason] = useState("");
   const [clubName, setClubName] = useState("");
 
   const [squad, setSquad] = useState<Player[] | null>(null);
@@ -67,7 +67,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getSeasons().then(setSeasons).catch(console.error);
+    api.getSeasons().then((s) => {
+      setSeasons(s);
+      if (s.length && !s.includes(season)) {
+        setSeason(s[0]);
+      }
+    }).catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

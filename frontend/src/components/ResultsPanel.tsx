@@ -44,7 +44,7 @@ function SigningWithAlternatives({
   const fpLabel = player.fair_price != null ? ` · ${t(lang, "fair_price")}: ${formatCurrency(player.fair_price)}` : "";
   const objVal = objectiveMetric(player, objective);
   const objLabel = objVal ? ` (${(OBJ_LABELS[lang] || OBJ_LABELS.en)[objective]}: ${objVal})` : "";
-  const detail = `${t(lang, POS_KEYS[player.position] || "pos_def")} · ${formatCurrency(player.market_value)} → ${formatCurrency(player.predicted_value)} ${t(lang, "predicted")}${objLabel}${fpLabel} · ${t(lang, "from_team", { team: player.team || "?" })}`;
+  const detail = `${t(lang, POS_KEYS[player.position] || "pos_def")} · ${formatCurrency(player.market_value)} → ${formatCurrency(player.predicted_value)} ${t(lang, "predicted")}${objLabel}${fpLabel}`;
 
   return (
     <div>
@@ -57,6 +57,7 @@ function SigningWithAlternatives({
           imgUrl={player.img_url}
           detail={detail}
           variant="bought"
+          team={player.team || undefined}
         />
         {alts.length > 0 && (
           <div className="text-[10px] text-gray-400 -mt-1 mb-1 ml-14">
@@ -215,8 +216,9 @@ function AIAnalysis({ lang }: { lang: Lang }) {
     try {
       const res = await api.aiSummary(apiKey, lang);
       setSummary(res.summary);
-    } catch {
-      setError(t(lang, "ai_error"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`${t(lang, "ai_error")} — ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -243,7 +245,7 @@ function AIAnalysis({ lang }: { lang: Lang }) {
           <p className="text-[10px] text-gray-400 mb-3">{t(lang, "llm_api_key_help")}</p>
           <button
             onClick={generate}
-            disabled={!apiKey || loading}
+            disabled={loading}
             className="btn-primary"
           >
             {loading ? t(lang, "generating") : t(lang, "generate_analysis")}
