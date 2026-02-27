@@ -1,4 +1,4 @@
-import type { Club, Player, SimulationResult, BuyCounts, Approach, Objective, SimSpeed, SellRecommendations, League, AdvancedFilters, Analytics, SearchResults } from "./types";
+import type { Club, Player, SimulationResult, BuyCounts, Approach, Objective, SimSpeed, SellRecommendations, League, AdvancedFilters, Analytics, SearchResults, XGrowthResults } from "./types";
 
 const BASE = "";
 
@@ -24,6 +24,8 @@ export const api = {
 
   getLeagues: (season: string) =>
     json<League[]>(`/api/leagues?season=${encodeURIComponent(season)}`),
+
+  getNationalities: () => json<string[]>("/api/nationalities"),
 
   loadSquad: (clubName: string, season: string) =>
     json<Player[]>("/api/load-squad", {
@@ -167,6 +169,58 @@ export const api = {
     json<Analytics>(
       `/api/analytics?club_name=${encodeURIComponent(clubName)}&season=${encodeURIComponent(season)}`
     ),
+
+  getXGrowth: (params: {
+    season?: string; position?: string;
+    minValue?: number; maxValue?: number;
+    minAge?: number; maxAge?: number;
+    clubName?: string; limit?: number;
+    horizon?: number;
+    leagueFilter?: string[];
+    excludeTopN?: number;
+    minMarketValue?: number;
+    sortBy?: string;
+    fAgeMin?: number; fAgeMax?: number;
+    fMvMin?: number; fMvMax?: number;
+    fPvMin?: number; fPvMax?: number;
+    fFpMin?: number; fFpMax?: number;
+    fXgMin?: number; fNbMin?: number;
+    fRoiMin?: number; fGpMin?: number;
+    teamQuery?: string;
+    nationalityFilter?: string[];
+    includeSecondNationality?: boolean;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params.season) sp.set("season", params.season);
+    if (params.position) sp.set("position", params.position);
+    if (params.minValue) sp.set("min_value", String(params.minValue));
+    if (params.maxValue) sp.set("max_value", String(params.maxValue));
+    if (params.minAge) sp.set("min_age", String(params.minAge));
+    if (params.maxAge) sp.set("max_age", String(params.maxAge));
+    if (params.clubName) sp.set("club_name", params.clubName);
+    if (params.horizon && params.horizon > 1) sp.set("horizon", String(params.horizon));
+    if (params.leagueFilter?.length) sp.set("league_filter", params.leagueFilter.join(","));
+    if (params.excludeTopN) sp.set("exclude_top_n", String(params.excludeTopN));
+    if (params.minMarketValue) sp.set("min_market_value", String(params.minMarketValue));
+    if (params.sortBy) sp.set("sort_by", params.sortBy);
+    if (params.fAgeMin != null) sp.set("f_age_min", String(params.fAgeMin));
+    if (params.fAgeMax != null) sp.set("f_age_max", String(params.fAgeMax));
+    if (params.fMvMin != null) sp.set("f_mv_min", String(params.fMvMin));
+    if (params.fMvMax != null) sp.set("f_mv_max", String(params.fMvMax));
+    if (params.fPvMin != null) sp.set("f_pv_min", String(params.fPvMin));
+    if (params.fPvMax != null) sp.set("f_pv_max", String(params.fPvMax));
+    if (params.fFpMin != null) sp.set("f_fp_min", String(params.fFpMin));
+    if (params.fFpMax != null) sp.set("f_fp_max", String(params.fFpMax));
+    if (params.fXgMin != null) sp.set("f_xg_min", String(params.fXgMin));
+    if (params.fNbMin != null) sp.set("f_nb_min", String(params.fNbMin));
+    if (params.fRoiMin != null) sp.set("f_roi_min", String(params.fRoiMin));
+    if (params.fGpMin != null) sp.set("f_gp_min", String(params.fGpMin));
+    if (params.teamQuery) sp.set("team_query", params.teamQuery);
+    if (params.nationalityFilter?.length) sp.set("nationality_filter", params.nationalityFilter.join(","));
+    if (params.includeSecondNationality) sp.set("include_second_nationality", "true");
+    sp.set("limit", String(params.limit ?? 50));
+    return json<XGrowthResults>(`/api/xgrowth?${sp.toString()}`);
+  },
 
   aiSummary: (apiKey: string, language: string) =>
     json<{ summary: string }>("/api/ai-summary", {

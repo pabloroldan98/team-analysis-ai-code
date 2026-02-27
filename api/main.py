@@ -133,6 +133,9 @@ class XGrowthPlayer(BaseModel):
     predicted_value: float
     xgrowth: float
     fair_price: float
+    net_benefit: float = 0
+    roi: float = 0
+    growth_pct: float = 0
     img_url: str = ""
 
 class SimilarPlayerOut(BaseModel):
@@ -207,6 +210,8 @@ ASSETS_DIR = ROOT_DIR / "assets"
 # In-memory cache for preloaded simulators
 _sim_cache: Dict[str, Any] = {}
 _last_result: Optional[Any] = None
+# Cache horizon-extrapolated predicted values: key = "season|horizon"
+_xgrowth_horizon_cache: Dict[str, Dict[str, float]] = {}
 
 
 def _player_to_out(p) -> PlayerOut:
@@ -325,6 +330,20 @@ def get_leagues(season: str) -> List[LeagueOut]:
     return result
 
 
+@app.get("/api/nationalities")
+def get_nationalities() -> List[str]:
+    """Return distinct nationalities across all cached simulators' player pools."""
+    nats: set = set()
+    for sim in _sim_cache.values():
+        for p in sim.all_players:
+            if p.nationality:
+                nats.add(p.nationality)
+            for n in (p.other_nationalities or []):
+                if n:
+                    nats.add(n)
+    return sorted(nats)
+
+
 @app.post("/api/load-squad")
 def load_squad(req: LoadSquadRequest) -> List[PlayerOut]:
     from simulator.transfer_simulator import TransferSimulator
@@ -341,6 +360,7 @@ def load_squad(req: LoadSquadRequest) -> List[PlayerOut]:
         raise HTTPException(status_code=400, detail=str(exc))
 
     _sim_cache[cache_key] = sim
+    _xgrowth_horizon_cache.clear()
     return [_player_to_out(p) for p in squad]
 
 
@@ -486,6 +506,305 @@ def get_analytics(club_name: str, season: str) -> AnalyticsOut:
     )
 
 
+class XGrowthRanges(BaseModel):
+    age: List[int] = [0, 50]
+    market_value: List[float] = [0, 0]
+    predicted_value: List[float] = [0, 0]
+    fair_price: List[float] = [0, 0]
+    xgrowth: List[float] = [0, 0]
+    net_benefit: List[float] = [0, 0]
+    roi: List[float] = [0, 0]
+    growth_pct: List[float] = [0, 0]
+
+class XGrowthResults(BaseModel):
+    players: List[XGrowthPlayer]
+    total: int
+    ranges: XGrowthRanges = XGrowthRanges()
+
+
+def _get_horizon_pv(sim, season: str, horizon: int) -> Dict[str, float]:
+    """Return {player_id: extrapolated_predicted_value} for given horizon.
+
+    Caches results so repeated xGrowth requests with the same season+horizon
+    don't recompute.
+    """
+    cache_key = f"{season}|{horizon}"
+    if cache_key in _xgrowth_horizon_cache:
+        return _xgrowth_horizon_cache[cache_key]
+
+    from ml.value_predictor import clamp_prediction
+
+    mapping: Dict[str, float] = {}
+    for p in sim.all_players:
+        pv_raw = p.predicted_value
+        mv = p.market_value or 0
+        if pv_raw is None or mv <= 0:
+            continue
+        if horizon <= 1:
+            mapping[p.player_id] = pv_raw
+        else:
+            annual_ratio = pv_raw / mv if mv > 0 else 1.0
+            current = mv
+            for _ in range(horizon):
+                projected = current * annual_ratio
+                current = clamp_prediction(projected, current)
+            mapping[p.player_id] = current
+
+    _xgrowth_horizon_cache[cache_key] = mapping
+    return mapping
+
+
+@app.get("/api/xgrowth")
+def get_xgrowth(
+    season: str = "",
+    position: Optional[str] = None,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+    min_age: Optional[int] = None,
+    max_age: Optional[int] = None,
+    club_name: Optional[str] = None,
+    horizon: int = 1,
+    league_filter: Optional[str] = None,
+    exclude_top_n: int = 0,
+    min_market_value: Optional[float] = None,
+    sort_by: str = "xgrowth",
+    limit: int = 50,
+    # Slider filters (applied after range computation)
+    f_age_min: Optional[int] = None,
+    f_age_max: Optional[int] = None,
+    f_mv_min: Optional[float] = None,
+    f_mv_max: Optional[float] = None,
+    f_pv_min: Optional[float] = None,
+    f_pv_max: Optional[float] = None,
+    f_fp_min: Optional[float] = None,
+    f_fp_max: Optional[float] = None,
+    f_xg_min: Optional[float] = None,
+    f_nb_min: Optional[float] = None,
+    f_roi_min: Optional[float] = None,
+    f_gp_min: Optional[float] = None,
+    team_query: Optional[str] = None,
+    nationality_filter: Optional[str] = None,
+    include_second_nationality: bool = False,
+) -> XGrowthResults:
+    """Top players by projected xGrowth with advanced filters."""
+    sim = None
+    for k, v in _sim_cache.items():
+        if season and season in k:
+            sim = v
+            break
+    if sim is None:
+        for k, v in _sim_cache.items():
+            sim = v
+            break
+    if sim is None:
+        raise HTTPException(status_code=400, detail="Load squad first")
+
+    # Club availability filter
+    available_set: Optional[set] = None
+    if club_name:
+        target_key = f"{club_name}|{season}" if season else None
+        target_sim = _sim_cache.get(target_key) if target_key else None
+        if target_sim is None:
+            target_sim = sim
+        available_set = {
+            p.player_id
+            for p in target_sim._get_available_players(
+                target_sim.all_players,
+                target_sim.club_players,
+                is_athletic=getattr(target_sim, "_is_athletic", False),
+                athletic_eligible_ids=getattr(target_sim, "_athletic_eligible_ids", None),
+            )
+        }
+
+    # League filter set
+    league_set: Optional[set] = None
+    if league_filter:
+        league_set = {lid.strip() for lid in league_filter.split(",") if lid.strip()}
+
+    # Nationality filter set
+    nat_set: Optional[set] = None
+    if nationality_filter:
+        nat_set = {n.strip() for n in nationality_filter.split(",") if n.strip()}
+
+    # Exclude top N clubs by market value
+    excluded_clubs: Optional[set] = None
+    if exclude_top_n > 0 and hasattr(sim, "team_market_values") and sim.team_market_values:
+        sorted_teams = sorted(
+            sim.team_market_values.items(), key=lambda kv: kv[1], reverse=True,
+        )
+        excluded_clubs = {name.lower() for name, _ in sorted_teams[:exclude_top_n]}
+
+    # Team league mapping for league filtering
+    team_league_map = None
+    if league_set:
+        from ml.feature_engineering import load_team_league_mapping
+        team_league_map = load_team_league_mapping()
+
+    # Horizon-extrapolated predicted values
+    horizon_pv = _get_horizon_pv(sim, season, horizon)
+
+    club_ids = {p.player_id for p in sim.club_players}
+    min_mv_euros = (min_market_value or 0) * 1_000_000
+
+    pool = []
+    for p in sim.all_players:
+        if p.player_id not in horizon_pv:
+            continue
+        if (p.market_value or 0) <= 0 or p.on_loan:
+            continue
+        if p.player_id in club_ids:
+            continue
+        if available_set is not None and p.player_id not in available_set:
+            continue
+
+        mv = p.market_value or 0
+
+        if min_mv_euros and mv < min_mv_euros:
+            continue
+        if position and (p.position or "") != position:
+            continue
+        if min_value is not None and mv < min_value * 1_000_000:
+            continue
+        if max_value is not None and mv > max_value * 1_000_000:
+            continue
+
+        age = p.age or 0
+        if min_age is not None and age < min_age:
+            continue
+        if max_age is not None and age > max_age:
+            continue
+
+        if excluded_clubs and (p.team or "").lower() in excluded_clubs:
+            continue
+
+        if league_set and team_league_map:
+            player_league = (
+                team_league_map
+                .get((p.team_id or "").strip(), {})
+                .get(sim.season, {})
+                .get("league_id", "")
+            )
+            if player_league not in league_set:
+                continue
+
+        if nat_set:
+            matched = (p.nationality or "") in nat_set
+            if not matched and include_second_nationality:
+                matched = any(n in nat_set for n in (p.other_nationalities or []))
+            if not matched:
+                continue
+
+        pool.append(p)
+
+    def _metrics(p):
+        mv = p.market_value or 0
+        pv = horizon_pv.get(p.player_id, p.predicted_value or mv)
+        if mv > 0:
+            xg = (pv / mv) - 1
+            roi = (pv - mv) / mv
+            gp = pv / mv
+        else:
+            xg = 9999.0 if pv > 0 else 0.0
+            roi = 9999.0 if pv > 0 else 0.0
+            gp = 9999.0 if pv > 0 else 0.0
+        nb = pv - mv
+        return pv, xg, nb, roi, gp
+
+    sort_keys = {
+        "xgrowth": lambda p: _metrics(p)[1],
+        "predicted_value": lambda p: _metrics(p)[0],
+        "net_benefit": lambda p: _metrics(p)[2],
+        "roi": lambda p: _metrics(p)[3],
+        "growth_pct": lambda p: _metrics(p)[4],
+        "market_value": lambda p: p.market_value or 0,
+    }
+    key_fn = sort_keys.get(sort_by, sort_keys["xgrowth"])
+    pool.sort(key=key_fn, reverse=True)
+
+    # Compute ranges from the full pool before applying limit
+    ranges = XGrowthRanges()
+    if pool:
+        ages = [p.age for p in pool if p.age]
+        mvs = [p.market_value or 0 for p in pool]
+        all_metrics = [_metrics(p) for p in pool]
+        pvs = [m[0] for m in all_metrics]
+        xgs = [m[1] for m in all_metrics]
+        nbs = [m[2] for m in all_metrics]
+        rois = [m[3] for m in all_metrics]
+        gps = [m[4] for m in all_metrics]
+        fps = [_compute_fair_price(p) for p in pool]
+        ranges = XGrowthRanges(
+            age=[min(ages) if ages else 15, max(ages) if ages else 45],
+            market_value=[min(mvs), max(mvs)],
+            predicted_value=[min(pvs), max(pvs)],
+            fair_price=[min(fps), max(fps)],
+            xgrowth=[round(min(xgs), 4), round(max(xgs), 4)],
+            net_benefit=[round(min(nbs), 0), round(max(nbs), 0)],
+            roi=[round(min(rois), 4), round(max(rois), 4)],
+            growth_pct=[round(min(gps), 4), round(max(gps), 4)],
+        )
+
+    # Apply slider filters (after ranges, so ranges stay stable)
+    tq = (team_query or "").lower().strip()
+    filtered = []
+    for p in pool:
+        pv, xg, nb, roi_v, gp_v = _metrics(p)
+        fp = _compute_fair_price(p)
+        age = p.age or 0
+        mv = p.market_value or 0
+        if position and (p.position or "") != position:
+            continue
+        if tq and tq not in (p.team or "").lower():
+            continue
+        if f_age_min is not None and age < f_age_min:
+            continue
+        if f_age_max is not None and age > f_age_max:
+            continue
+        if f_mv_min is not None and mv < f_mv_min:
+            continue
+        if f_mv_max is not None and mv > f_mv_max:
+            continue
+        if f_pv_min is not None and pv < f_pv_min:
+            continue
+        if f_pv_max is not None and pv > f_pv_max:
+            continue
+        if f_fp_min is not None and fp < f_fp_min:
+            continue
+        if f_fp_max is not None and fp > f_fp_max:
+            continue
+        if f_xg_min is not None and xg < f_xg_min:
+            continue
+        if f_nb_min is not None and nb < f_nb_min:
+            continue
+        if f_roi_min is not None and roi_v < f_roi_min:
+            continue
+        if f_gp_min is not None and gp_v < f_gp_min:
+            continue
+        filtered.append(p)
+
+    total = len(filtered)
+    results = []
+    for p in filtered[:limit]:
+        mv = p.market_value or 1
+        pv, xg, nb, roi_v, gp_v = _metrics(p)
+        results.append(XGrowthPlayer(
+            player_id=p.player_id,
+            name=p.name,
+            position=p.position or "N/A",
+            age=p.age,
+            team=p.team or "",
+            market_value=p.market_value or 0,
+            predicted_value=round(pv, 0),
+            xgrowth=round(xg, 4),
+            fair_price=round(_compute_fair_price(p), 0),
+            net_benefit=round(nb, 0),
+            roi=round(roi_v, 4),
+            growth_pct=round(gp_v, 4),
+            img_url=p.img_url or "",
+        ))
+    return XGrowthResults(players=results, total=total, ranges=ranges)
+
+
 @app.get("/api/search-players")
 def search_players(
     q: str = "",
@@ -554,7 +873,7 @@ def search_players(
 
 
 @app.post("/api/simulate")
-def simulate(req: SimulateRequest) -> SimulationResultOut:
+def simulate(req: SimulateRequest):
     global _last_result
     from simulator.transfer_simulator import TransferSimulator
 
@@ -607,33 +926,7 @@ def simulate(req: SimulateRequest) -> SimulationResultOut:
         raise HTTPException(status_code=400, detail=str(exc))
 
     _last_result = result
-
-    sold_out = []
-    for sp in result.players_sold:
-        p = sp.player
-        sold_out.append(SoldPlayerOut(
-            player_id=p.player_id,
-            name=p.name,
-            position=p.position or "N/A",
-            market_value=p.market_value,
-            destination_team=sp.destination_team,
-            was_sold=sp.was_sold,
-            img_url=p.img_url or "",
-        ))
-
-    return SimulationResultOut(
-        club_name=result.club_name,
-        season=result.season,
-        initial_budget=result.initial_budget,
-        sales_revenue=result.sales_revenue,
-        total_budget=result.total_budget,
-        players_sold=sold_out,
-        formation_needed=result.formation_needed,
-        recommended_signings=[_player_to_out(p) for p in result.recommended_signings],
-        recommended_formation=result.recommended_formation,
-        total_signing_cost=result.total_signing_cost,
-        total_predicted_value=result.total_predicted_value,
-    )
+    return _build_result_dict(result, sim=sim)
 
 
 def _build_result_dict(result, sim=None) -> dict:
@@ -656,8 +949,12 @@ def _build_result_dict(result, sim=None) -> dict:
     for p in result.recommended_signings:
         out = _player_to_out(p).model_dump()
         if sim is not None:
-            alts = sim.get_alternatives(p, exclude_ids=signing_ids, n=5)
-            out["alternatives"] = [_player_to_out(a).model_dump() for a in alts]
+            try:
+                alts = sim.get_alternatives(p, exclude_ids=signing_ids, n=5)
+                out["alternatives"] = [_player_to_out(a).model_dump() for a in alts]
+            except Exception as exc:
+                print(f"[WARN] Failed to compute alternatives for {p.name}: {exc}")
+                out["alternatives"] = []
         else:
             out["alternatives"] = []
         signings_out.append(out)
