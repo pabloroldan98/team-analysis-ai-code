@@ -44,21 +44,22 @@ class ValuePredictor:
         "current_club_value_M", "is_in_top_league", "is_in_home_league",
         "valuation_year",
         "max_value_M", "min_value_M", "avg_value_M",
-        "value_6m_ago_M", "value_1y_ago_M", "value_2y_ago_M",
+        "last_valuation_date_num",
+        "value_1y_ago_M", "value_2y_ago_M",
         "value_3y_ago_M", "value_4y_ago_M", "value_5y_ago_M",
-        "trend_6m", "trend_1y", "trend_2y", "trend_4y", "trend_5y",
-        "pct_6m", "pct_1y", "pct_2y", "pct_4y", "pct_5y",
-        "diff_6m_M", "diff_1y_M", "diff_2y_M", "diff_4y_M", "diff_5y_M",
+        "trend_1y", "trend_2y", "trend_4y", "trend_5y",
+        "pct_1y", "pct_2y", "pct_4y", "pct_5y",
+        "diff_1y_M", "diff_2y_M", "diff_4y_M", "diff_5y_M",
         "months_since_peak", "num_valuations", "months_of_history",
         "current_value_percentile",
-        "value_6m_ago_percentile", "value_1y_ago_percentile",
+        "value_1y_ago_percentile",
         "value_2y_ago_percentile", "value_3y_ago_percentile",
         "value_4y_ago_percentile", "value_5y_ago_percentile",
-        "diff_percentile_6m", "diff_percentile_1y", "diff_percentile_2y",
+        "diff_percentile_1y", "diff_percentile_2y",
         "diff_percentile_3y", "diff_percentile_4y", "diff_percentile_5y",
-        "trend_percentile_6m", "trend_percentile_1y", "trend_percentile_2y",
+        "trend_percentile_1y", "trend_percentile_2y",
         "trend_percentile_3y", "trend_percentile_4y", "trend_percentile_5y",
-        "pct_percentile_6m", "pct_percentile_1y", "pct_percentile_2y",
+        "pct_percentile_1y", "pct_percentile_2y",
         "pct_percentile_3y", "pct_percentile_4y", "pct_percentile_5y",
         # v2 extended features
         "height", "preferred_foot", "num_positions",
@@ -338,7 +339,7 @@ class ValuePredictor:
         if model_features is not None:
             missing = [c for c in model_features if c not in X.columns]
             for c in missing:
-                X[c] = 0.0
+                X[c] = float("nan")
             X = X[[c for c in model_features if c in X.columns]]
 
         X = self._coerce_categories_for_prediction(X)
@@ -377,7 +378,7 @@ class ValuePredictor:
         if model_features is not None:
             missing = [c for c in model_features if c not in X.columns]
             for c in missing:
-                X[c] = 0.0
+                X[c] = float("nan")
             X = X[[c for c in model_features if c in X.columns]]
 
         X = self._coerce_categories_for_prediction(X)
@@ -559,7 +560,12 @@ class SegmentedValuePredictor:
         return self.segment_models.get(segment) or self.global_model
 
     def predict_batch(self, features_list: List[PlayerFeatures]) -> List[float]:
-        """Predict with segment routing, boundary blending and anomaly clamping."""
+        """Predict with segment routing, boundary blending and anomaly clamping.
+
+        Blending is batched: players near segment boundaries are collected
+        per (lo_model, hi_model) pair and predicted in two batch calls
+        instead of 2 × N individual calls.
+        """
         if not features_list:
             return []
         if not self.segment_models:
@@ -585,9 +591,11 @@ class SegmentedValuePredictor:
             for idx, pred in zip(indices, preds):
                 results[idx] = pred
 
+        # Batch blending: group boundary players by (lo_model, hi_model) pair
+        blend_groups: Dict[Tuple[str, str], List[Tuple[int, float]]] = {}
         for i, f in enumerate(features_list):
             val = f.current_value
-            for j, (_, lo, hi) in enumerate(SEGMENT_THRESHOLDS[:-1]):
+            for j, (_, _lo, hi) in enumerate(SEGMENT_THRESHOLDS[:-1]):
                 boundary = hi
                 zone = boundary * BLEND_ZONE
                 if abs(val - boundary) < zone:
@@ -596,12 +604,20 @@ class SegmentedValuePredictor:
                     m_lo = self._get_model(lo_seg)
                     m_hi = self._get_model(hi_seg)
                     if m_lo and m_hi and m_lo is not m_hi:
-                        p_lo = m_lo.predict(f)
-                        p_hi = m_hi.predict(f)
-                        alpha = (val - (boundary - zone)) / (2 * zone)
-                        alpha = max(0.0, min(1.0, alpha))
-                        results[i] = (1 - alpha) * p_lo + alpha * p_hi
+                        alpha = max(0.0, min(1.0, (val - (boundary - zone)) / (2 * zone)))
+                        blend_groups.setdefault((lo_seg, hi_seg), []).append((i, alpha))
                     break
+
+        for (lo_seg, hi_seg), items in blend_groups.items():
+            if not items:
+                continue
+            indices_blend = [it[0] for it in items]
+            alphas = [it[1] for it in items]
+            blend_features = [features_list[i] for i in indices_blend]
+            preds_lo = self._get_model(lo_seg).predict_batch(blend_features)
+            preds_hi = self._get_model(hi_seg).predict_batch(blend_features)
+            for idx, a, p_lo, p_hi in zip(indices_blend, alphas, preds_lo, preds_hi):
+                results[idx] = (1 - a) * p_lo + a * p_hi
 
         return [clamp_prediction(p, f.current_value) for p, f in zip(results, features_list)]
 

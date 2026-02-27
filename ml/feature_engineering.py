@@ -101,7 +101,7 @@ class PlayerFeatures:
     max_value: float
     min_value: float
     avg_value: float
-    value_6m_ago: Optional[float]
+    last_valuation_date_num: float  # Last valuation date as decimal year (e.g. 2024.75)
     value_1y_ago: Optional[float]
     value_2y_ago: Optional[float]
     value_3y_ago: Optional[float]
@@ -109,21 +109,18 @@ class PlayerFeatures:
     value_5y_ago: Optional[float]
     
     # Trend features (% change)
-    trend_6m: float
     trend_1y: float
     trend_2y: float
     trend_4y: float
     trend_5y: float
     
     # Percent features (current / past)
-    pct_6m: float
     pct_1y: float
     pct_2y: float
     pct_4y: float
     pct_5y: float
     
     # Difference features (current - past)
-    diff_6m: float
     diff_1y: float
     diff_2y: float
     diff_4y: float
@@ -136,26 +133,22 @@ class PlayerFeatures:
     
     # Percentile features (computed per cutoff, 0-100; np.nan when no data)
     current_value_percentile: float = 0.0
-    value_6m_ago_percentile: float = 0.0
     value_1y_ago_percentile: float = 0.0
     value_2y_ago_percentile: float = 0.0
     value_3y_ago_percentile: float = 0.0
     value_4y_ago_percentile: float = 0.0
     value_5y_ago_percentile: float = 0.0
     # Derived: diff (current - past), trend ((current-past)/max(past,1)), pct (current/max(past,1))
-    diff_percentile_6m: float = 0.0
     diff_percentile_1y: float = 0.0
     diff_percentile_2y: float = 0.0
     diff_percentile_3y: float = 0.0
     diff_percentile_4y: float = 0.0
     diff_percentile_5y: float = 0.0
-    trend_percentile_6m: float = 0.0
     trend_percentile_1y: float = 0.0
     trend_percentile_2y: float = 0.0
     trend_percentile_3y: float = 0.0
     trend_percentile_4y: float = 0.0
     trend_percentile_5y: float = 0.0
-    pct_percentile_6m: float = 0.0
     pct_percentile_1y: float = 0.0
     pct_percentile_2y: float = 0.0
     pct_percentile_3y: float = 0.0
@@ -167,7 +160,7 @@ class PlayerFeatures:
     preferred_foot: str = "Unknown"  # Left / Right / Both / Unknown (categorical)
     num_positions: int = 1  # positional versatility (1 = specialist)
     value_volatility: float = 0.0  # std(recent_values) / mean(recent_values)
-    value_acceleration: float = 0.0  # trend_6m − trend_1y (change of trend)
+    value_acceleration: float = 0.0  # trend_1y − trend_2y (change of trend)
     peak_ratio: float = 1.0  # current_value / max_value (1 = at peak)
     age_value_ratio: float = 0.0  # current_value / (age²) – captures prime-curve
     log_current_value: float = 0.0  # log₁₀(1 + current_value) – scale-invariant
@@ -193,12 +186,13 @@ class PlayerFeatures:
         return x
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for DataFrame."""
+        """Convert to dictionary for JSON serialization (nan → None)."""
+        jf = self._json_float
         return {
             "player_id": self.player_id,
             "player_name": self.player_name,
             "current_value": self.current_value,
-            "age": self.age,
+            "age": jf(self.age),
             "position": self.position,
             "player_nationality": self.player_nationality,
             "player_nationality_bin": self.player_nationality_bin,
@@ -207,70 +201,63 @@ class PlayerFeatures:
             "current_league": self.current_league,
             "league_tier": self.league_tier,
             "current_club": self.current_club,
-            "current_club_value": self.current_club_value,
+            "current_club_value": jf(self.current_club_value),
             "current_club_bin": self.current_club_bin,
             "valuation_date": self.valuation_date.strftime("%Y-%m-%d") if self.valuation_date else None,
             "valuation_year": self.valuation_date.year + self.valuation_date.month / 12.0 if self.valuation_date else None,
             "max_value": self.max_value,
             "min_value": self.min_value,
             "avg_value": self.avg_value,
-            "value_6m_ago": self.value_6m_ago,
+            "last_valuation_date_num": jf(self.last_valuation_date_num),
             "value_1y_ago": self.value_1y_ago,
             "value_2y_ago": self.value_2y_ago,
             "value_3y_ago": self.value_3y_ago,
             "value_4y_ago": self.value_4y_ago,
             "value_5y_ago": self.value_5y_ago,
-            "trend_6m": self.trend_6m,
-            "trend_1y": self.trend_1y,
-            "trend_2y": self.trend_2y,
-            "trend_4y": self.trend_4y,
-            "trend_5y": self.trend_5y,
-            "pct_6m": self.pct_6m,
-            "pct_1y": self.pct_1y,
-            "pct_2y": self.pct_2y,
-            "pct_4y": self.pct_4y,
-            "pct_5y": self.pct_5y,
-            "diff_6m": self.diff_6m,
-            "diff_1y": self.diff_1y,
-            "diff_2y": self.diff_2y,
-            "diff_4y": self.diff_4y,
-            "diff_5y": self.diff_5y,
+            "trend_1y": jf(self.trend_1y),
+            "trend_2y": jf(self.trend_2y),
+            "trend_4y": jf(self.trend_4y),
+            "trend_5y": jf(self.trend_5y),
+            "pct_1y": jf(self.pct_1y),
+            "pct_2y": jf(self.pct_2y),
+            "pct_4y": jf(self.pct_4y),
+            "pct_5y": jf(self.pct_5y),
+            "diff_1y": jf(self.diff_1y),
+            "diff_2y": jf(self.diff_2y),
+            "diff_4y": jf(self.diff_4y),
+            "diff_5y": jf(self.diff_5y),
             "months_since_peak": self.months_since_peak,
             "num_valuations": self.num_valuations,
             "months_of_history": self.months_of_history,
             "current_value_percentile": self.current_value_percentile,
-            "value_6m_ago_percentile": self._json_float(self.value_6m_ago_percentile),
-            "value_1y_ago_percentile": self._json_float(self.value_1y_ago_percentile),
-            "value_2y_ago_percentile": self._json_float(self.value_2y_ago_percentile),
-            "value_3y_ago_percentile": self._json_float(self.value_3y_ago_percentile),
-            "value_4y_ago_percentile": self._json_float(self.value_4y_ago_percentile),
-            "value_5y_ago_percentile": self._json_float(self.value_5y_ago_percentile),
-            "diff_percentile_6m": self._json_float(self.diff_percentile_6m),
-            "diff_percentile_1y": self._json_float(self.diff_percentile_1y),
-            "diff_percentile_2y": self._json_float(self.diff_percentile_2y),
-            "diff_percentile_3y": self._json_float(self.diff_percentile_3y),
-            "diff_percentile_4y": self._json_float(self.diff_percentile_4y),
-            "diff_percentile_5y": self._json_float(self.diff_percentile_5y),
-            "trend_percentile_6m": self._json_float(self.trend_percentile_6m),
-            "trend_percentile_1y": self._json_float(self.trend_percentile_1y),
-            "trend_percentile_2y": self._json_float(self.trend_percentile_2y),
-            "trend_percentile_3y": self._json_float(self.trend_percentile_3y),
-            "trend_percentile_4y": self._json_float(self.trend_percentile_4y),
-            "trend_percentile_5y": self._json_float(self.trend_percentile_5y),
-            "pct_percentile_6m": self._json_float(self.pct_percentile_6m),
-            "pct_percentile_1y": self._json_float(self.pct_percentile_1y),
-            "pct_percentile_2y": self._json_float(self.pct_percentile_2y),
-            "pct_percentile_3y": self._json_float(self.pct_percentile_3y),
-            "pct_percentile_4y": self._json_float(self.pct_percentile_4y),
-            "pct_percentile_5y": self._json_float(self.pct_percentile_5y),
-            "height": self.height,
+            "value_1y_ago_percentile": jf(self.value_1y_ago_percentile),
+            "value_2y_ago_percentile": jf(self.value_2y_ago_percentile),
+            "value_3y_ago_percentile": jf(self.value_3y_ago_percentile),
+            "value_4y_ago_percentile": jf(self.value_4y_ago_percentile),
+            "value_5y_ago_percentile": jf(self.value_5y_ago_percentile),
+            "diff_percentile_1y": jf(self.diff_percentile_1y),
+            "diff_percentile_2y": jf(self.diff_percentile_2y),
+            "diff_percentile_3y": jf(self.diff_percentile_3y),
+            "diff_percentile_4y": jf(self.diff_percentile_4y),
+            "diff_percentile_5y": jf(self.diff_percentile_5y),
+            "trend_percentile_1y": jf(self.trend_percentile_1y),
+            "trend_percentile_2y": jf(self.trend_percentile_2y),
+            "trend_percentile_3y": jf(self.trend_percentile_3y),
+            "trend_percentile_4y": jf(self.trend_percentile_4y),
+            "trend_percentile_5y": jf(self.trend_percentile_5y),
+            "pct_percentile_1y": jf(self.pct_percentile_1y),
+            "pct_percentile_2y": jf(self.pct_percentile_2y),
+            "pct_percentile_3y": jf(self.pct_percentile_3y),
+            "pct_percentile_4y": jf(self.pct_percentile_4y),
+            "pct_percentile_5y": jf(self.pct_percentile_5y),
+            "height": jf(self.height),
             "preferred_foot": self.preferred_foot,
             "num_positions": self.num_positions,
-            "value_volatility": self.value_volatility,
-            "value_acceleration": self.value_acceleration,
-            "peak_ratio": self.peak_ratio,
-            "age_value_ratio": self.age_value_ratio,
-            "log_current_value": self.log_current_value,
+            "value_volatility": jf(self.value_volatility),
+            "value_acceleration": jf(self.value_acceleration),
+            "peak_ratio": jf(self.peak_ratio),
+            "age_value_ratio": jf(self.age_value_ratio),
+            "log_current_value": jf(self.log_current_value),
             "cutoff_season": self.cutoff_season,
             "target_value": self.target_value,
         }
@@ -282,11 +269,15 @@ class PlayerFeatures:
         Categorical features are kept as strings (XGBoost handles them natively).
         """
         # Valuation date as decimal year (e.g., 2023.5 for July 2023)
-        valuation_year = self.valuation_date.year + self.valuation_date.month / 12.0 if self.valuation_date else 2020.0
-        
+        valuation_year = (
+            self.valuation_date.year + self.valuation_date.month / 12.0
+            if self.valuation_date else float("nan")
+        )
+        sf = self._safe_float
+
         return {
             "current_value_M": self.current_value / 1_000_000,
-            "age": float(self.age),
+            "age": float(self.age) if self.age else float("nan"),
             "position": self.position,  # Categorical
             "player_nationality_bin": self.player_nationality_bin,  # Categorical
             "current_club_bin": self.current_club_bin,  # Categorical
@@ -299,23 +290,25 @@ class PlayerFeatures:
             "max_value_M": self.max_value / 1_000_000,
             "min_value_M": self.min_value / 1_000_000,
             "avg_value_M": self.avg_value / 1_000_000,
-            "value_6m_ago_M": (self.value_6m_ago or 0) / 1_000_000,
+            "last_valuation_date_num": self.last_valuation_date_num,
             "value_1y_ago_M": (self.value_1y_ago or 0) / 1_000_000,
             "value_2y_ago_M": (self.value_2y_ago or 0) / 1_000_000,
             "value_3y_ago_M": (self.value_3y_ago or 0) / 1_000_000,
             "value_4y_ago_M": (self.value_4y_ago or 0) / 1_000_000,
             "value_5y_ago_M": (self.value_5y_ago or 0) / 1_000_000,
-            "trend_6m": self.trend_6m,
+            # "value_1y_ago_M": self.value_1y_ago / 1_000_000 if self.value_1y_ago is not None else float("nan"),
+            # "value_2y_ago_M": self.value_2y_ago / 1_000_000 if self.value_2y_ago is not None else float("nan"),
+            # "value_3y_ago_M": self.value_3y_ago / 1_000_000 if self.value_3y_ago is not None else float("nan"),
+            # "value_4y_ago_M": self.value_4y_ago / 1_000_000 if self.value_4y_ago is not None else float("nan"),
+            # "value_5y_ago_M": self.value_5y_ago / 1_000_000 if self.value_5y_ago is not None else float("nan"),
             "trend_1y": self.trend_1y,
             "trend_2y": self.trend_2y,
             "trend_4y": self.trend_4y,
             "trend_5y": self.trend_5y,
-            "pct_6m": self.pct_6m,
             "pct_1y": self.pct_1y,
             "pct_2y": self.pct_2y,
             "pct_4y": self.pct_4y,
             "pct_5y": self.pct_5y,
-            "diff_6m_M": self.diff_6m / 1_000_000,
             "diff_1y_M": self.diff_1y / 1_000_000,
             "diff_2y_M": self.diff_2y / 1_000_000,
             "diff_4y_M": self.diff_4y / 1_000_000,
@@ -324,32 +317,27 @@ class PlayerFeatures:
             "num_valuations": float(self.num_valuations),
             "months_of_history": float(self.months_of_history),
             "current_value_percentile": float(self.current_value_percentile),
-            "value_6m_ago_percentile": self._safe_float(self.value_6m_ago_percentile),
-            "value_1y_ago_percentile": self._safe_float(self.value_1y_ago_percentile),
-            "value_2y_ago_percentile": self._safe_float(self.value_2y_ago_percentile),
-            "value_3y_ago_percentile": self._safe_float(self.value_3y_ago_percentile),
-            "value_4y_ago_percentile": self._safe_float(self.value_4y_ago_percentile),
-            "value_5y_ago_percentile": self._safe_float(self.value_5y_ago_percentile),
-            "diff_percentile_6m": self._safe_float(self.diff_percentile_6m),
-            "diff_percentile_1y": self._safe_float(self.diff_percentile_1y),
-            "diff_percentile_2y": self._safe_float(self.diff_percentile_2y),
-            "diff_percentile_3y": self._safe_float(self.diff_percentile_3y),
-            "diff_percentile_4y": self._safe_float(self.diff_percentile_4y),
-            "diff_percentile_5y": self._safe_float(self.diff_percentile_5y),
-            "trend_percentile_6m": self._safe_float(self.trend_percentile_6m),
-            "trend_percentile_1y": self._safe_float(self.trend_percentile_1y),
-            "trend_percentile_2y": self._safe_float(self.trend_percentile_2y),
-            "trend_percentile_3y": self._safe_float(self.trend_percentile_3y),
-            "trend_percentile_4y": self._safe_float(self.trend_percentile_4y),
-            "trend_percentile_5y": self._safe_float(self.trend_percentile_5y),
-            "pct_percentile_6m": self._safe_float(self.pct_percentile_6m),
-            "pct_percentile_1y": self._safe_float(self.pct_percentile_1y),
-            "pct_percentile_2y": self._safe_float(self.pct_percentile_2y),
-            "pct_percentile_3y": self._safe_float(self.pct_percentile_3y),
-            "pct_percentile_4y": self._safe_float(self.pct_percentile_4y),
-            "pct_percentile_5y": self._safe_float(self.pct_percentile_5y),
-            # v2 extended features
-            "height": float(self.height) if self.height else 0.0,
+            "value_1y_ago_percentile": sf(self.value_1y_ago_percentile),
+            "value_2y_ago_percentile": sf(self.value_2y_ago_percentile),
+            "value_3y_ago_percentile": sf(self.value_3y_ago_percentile),
+            "value_4y_ago_percentile": sf(self.value_4y_ago_percentile),
+            "value_5y_ago_percentile": sf(self.value_5y_ago_percentile),
+            "diff_percentile_1y": sf(self.diff_percentile_1y),
+            "diff_percentile_2y": sf(self.diff_percentile_2y),
+            "diff_percentile_3y": sf(self.diff_percentile_3y),
+            "diff_percentile_4y": sf(self.diff_percentile_4y),
+            "diff_percentile_5y": sf(self.diff_percentile_5y),
+            "trend_percentile_1y": sf(self.trend_percentile_1y),
+            "trend_percentile_2y": sf(self.trend_percentile_2y),
+            "trend_percentile_3y": sf(self.trend_percentile_3y),
+            "trend_percentile_4y": sf(self.trend_percentile_4y),
+            "trend_percentile_5y": sf(self.trend_percentile_5y),
+            "pct_percentile_1y": sf(self.pct_percentile_1y),
+            "pct_percentile_2y": sf(self.pct_percentile_2y),
+            "pct_percentile_3y": sf(self.pct_percentile_3y),
+            "pct_percentile_4y": sf(self.pct_percentile_4y),
+            "pct_percentile_5y": sf(self.pct_percentile_5y),
+            "height": float(self.height) if self.height else float("nan"),
             "preferred_foot": self.preferred_foot,  # Categorical
             "num_positions": float(self.num_positions),
             "value_volatility": float(self.value_volatility),
@@ -401,10 +389,11 @@ def _get_value_at_date(
 def _compute_trend(current: float, past: Optional[float]) -> float:
     """Compute percentage change from past to current.
     
-    If past == 0, uses max(past, 1) to avoid division by zero.
+    Returns np.nan when past is unknown so XGBoost can learn the optimal
+    split direction for missing historical data.
     """
     if past is None:
-        return 0.0
+        return float("nan")
     denom = max(past, 1)
     return (current - past) / denom
 
@@ -412,18 +401,18 @@ def _compute_trend(current: float, past: Optional[float]) -> float:
 def _compute_pct(current: float, past: Optional[float]) -> float:
     """Compute ratio current / past.
     
-    If past == 0, uses max(past, 1) to avoid division by zero.
+    Returns np.nan when past is unknown.
     """
     if past is None:
-        return 0.0
+        return float("nan")
     denom = max(past, 1)
     return current / denom
 
 
 def _compute_diff(current: float, past: Optional[float]) -> float:
-    """Compute difference current - past."""
+    """Compute difference current - past. Returns np.nan when past is unknown."""
     if past is None:
-        return 0.0
+        return float("nan")
     return current - past
 
 
@@ -444,12 +433,53 @@ def _bin_nationality(nationality: str) -> str:
     return "Other"
 
 
+FAIR_PRICE_CAP = 250_000_000
+
+
+def compute_fair_prices(
+    by_player: Dict[str, List[Valuation]],
+    cutoff_date: datetime,
+) -> Dict[str, float]:
+    """Fair price via linear extrapolation from the last 2 valuations <= cutoff.
+
+    Uses the already-grouped *by_player* dict (player_id → [Valuation]) so
+    there is no redundant full-scan of all valuations.
+
+    Returns ``{player_id: fair_price}`` clamped to [0, FAIR_PRICE_CAP].
+    """
+    result: Dict[str, float] = {}
+    for pid, vals in by_player.items():
+        pts: List[Tuple[datetime, float]] = []
+        for v in vals:
+            if v.valuation_amount is None:
+                continue
+            d = parse_date(v.valuation_date or "")
+            if d is None or d > cutoff_date:
+                continue
+            pts.append((d, v.valuation_amount))
+        if not pts:
+            continue
+        pts.sort(key=lambda x: x[0])
+        if len(pts) == 1:
+            result[pid] = max(0.0, min(FAIR_PRICE_CAP, pts[0][1]))
+            continue
+        (d1, v1), (d2, v2) = pts[-2], pts[-1]
+        span = (d2 - d1).total_seconds()
+        if span == 0:
+            result[pid] = max(0.0, min(FAIR_PRICE_CAP, v2))
+            continue
+        dt = (cutoff_date - d1).total_seconds()
+        slope = (v2 - v1) / span
+        result[pid] = max(0.0, min(FAIR_PRICE_CAP, v1 + slope * dt))
+    return result
+
+
 # Horizons for percentile features (attribute suffix)
-_PERCENTILE_HORIZONS = ["6m", "1y", "2y", "3y", "4y", "5y"]
+_PERCENTILE_HORIZONS = ["1y", "2y", "3y", "4y", "5y"]
 
 
-def _load_float(x: Optional[float], default: float = 0.0) -> float:
-    """Load float from JSON; None -> default (for backward compat with old datasets)."""
+def _load_float(x: Optional[float], default: float = float("nan")) -> float:
+    """Load float from JSON; None -> NaN (XGBoost handles missing natively)."""
     if x is None:
         return default
     return float(x)
@@ -897,12 +927,12 @@ def extract_player_features(
     player_id = last_val.player_id
     player_name = last_val.player_name
 
-    # Age: compute from birth_date + cutoff, fallback to valuation age, then player age
     age = None
     if player_info and player_info.birth_date:
         age = _compute_age(player_info.birth_date, cutoff_date)
     if age is None:
-        age = float(last_val.age_at_valuation or (player_info.age if player_info else None) or 25)
+        raw_age = last_val.age_at_valuation or (player_info.age if player_info else None)
+        age = float(raw_age) if raw_age is not None else float("nan")
     
     # Position
     if player_info and player_info.position:
@@ -937,7 +967,7 @@ def extract_player_features(
 
     current_club_bin = _bin_club(current_club)
     team_total_values = team_total_values or {}
-    current_club_value = team_total_values.get(club_id, 0.0) if club_id else 0.0
+    current_club_value = team_total_values.get(club_id, float("nan")) if club_id else float("nan")
     valuation_date = last_date  # Date of the most recent valuation before cutoff
     
     # Historical stats
@@ -949,7 +979,9 @@ def extract_player_features(
     # Value at specific past dates
     val_list = [(d, v) for d, v, _ in parsed]
     
-    value_6m_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=180), 15)
+    # Last valuation date as decimal year
+    last_valuation_date_num = last_date.year + (last_date.month - 1) / 12.0 + (last_date.day - 1) / 365.25
+
     value_1y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=365), 30)
     value_2y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=730), 30)
     value_3y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1095), 30)
@@ -957,21 +989,18 @@ def extract_player_features(
     value_5y_ago = _get_value_at_date(val_list, cutoff_date - timedelta(days=1825), 30)
     
     # Trends
-    trend_6m = _compute_trend(current_value, value_6m_ago)
     trend_1y = _compute_trend(current_value, value_1y_ago)
     trend_2y = _compute_trend(current_value, value_2y_ago)
     trend_4y = _compute_trend(current_value, value_4y_ago)
     trend_5y = _compute_trend(current_value, value_5y_ago)
     
     # Percent (current / past)
-    pct_6m = _compute_pct(current_value, value_6m_ago)
     pct_1y = _compute_pct(current_value, value_1y_ago)
     pct_2y = _compute_pct(current_value, value_2y_ago)
     pct_4y = _compute_pct(current_value, value_4y_ago)
     pct_5y = _compute_pct(current_value, value_5y_ago)
     
     # Difference (current - past)
-    diff_6m = _compute_diff(current_value, value_6m_ago)
     diff_1y = _compute_diff(current_value, value_1y_ago)
     diff_2y = _compute_diff(current_value, value_2y_ago)
     diff_4y = _compute_diff(current_value, value_4y_ago)
@@ -985,7 +1014,7 @@ def extract_player_features(
     months_of_history = int((cutoff_date - first_date).days / 30)
     
     # Extended features (v2)
-    height_val = float(player_info.height) if player_info and player_info.height else 0.0
+    height_val = float(player_info.height) if player_info and player_info.height else float("nan")
     foot = (player_info.preferred_foot or "Unknown") if player_info else "Unknown"
     if foot not in ("Left", "Right", "Both"):
         foot = "Unknown"
@@ -998,10 +1027,13 @@ def extract_player_features(
     val_std = (sum((v - val_mean) ** 2 for v in recent_values) / len(recent_values)) ** 0.5 if len(recent_values) > 1 else 0.0
     value_volatility = val_std / max(val_mean, 1.0)
 
-    value_acceleration = trend_6m - trend_1y
+    value_acceleration = trend_1y - trend_2y
     peak_ratio = current_value / max(max_value, 1.0)
-    age_sq = max(age, 1.0) ** 2
-    age_value_ratio = (current_value / 1_000_000) / (age_sq / 100.0) if age_sq > 0 else 0.0
+    if np.isnan(age):
+        age_value_ratio = float("nan")
+    else:
+        age_sq = max(age, 1.0) ** 2
+        age_value_ratio = (current_value / 1_000_000) / (age_sq / 100.0) if age_sq > 0 else 0.0
     log_current_value = float(np.log10(max(current_value, 1.0)))
 
     # Target value (1 year after cutoff, or latest if not available)
@@ -1032,23 +1064,20 @@ def extract_player_features(
         max_value=max_value,
         min_value=min_value,
         avg_value=avg_value,
-        value_6m_ago=value_6m_ago,
+        last_valuation_date_num=last_valuation_date_num,
         value_1y_ago=value_1y_ago,
         value_2y_ago=value_2y_ago,
         value_3y_ago=value_3y_ago,
         value_4y_ago=value_4y_ago,
         value_5y_ago=value_5y_ago,
-        trend_6m=trend_6m,
         trend_1y=trend_1y,
         trend_2y=trend_2y,
         trend_4y=trend_4y,
         trend_5y=trend_5y,
-        pct_6m=pct_6m,
         pct_1y=pct_1y,
         pct_2y=pct_2y,
         pct_4y=pct_4y,
         pct_5y=pct_5y,
-        diff_6m=diff_6m,
         diff_1y=diff_1y,
         diff_2y=diff_2y,
         diff_4y=diff_4y,
@@ -1093,30 +1122,17 @@ def _detect_cutoff_dates(
     - There is data before it (for features)
     - There is data after it (for target, at least 1 year later)
     """
-    # Find min and max dates in valuations
     min_date = None
     max_date = None
     
     for v in all_valuations:
-        try:
-            date_val = v.valuation_date
-            if isinstance(date_val, str) and date_val:
-                # Try DD/MM/YYYY format first (from JSON), then YYYY-MM-DD
-                try:
-                    dt = datetime.strptime(date_val, "%d/%m/%Y")
-                except ValueError:
-                    dt = datetime.strptime(date_val, "%Y-%m-%d")
-            elif isinstance(date_val, datetime):
-                dt = date_val
-            else:
-                continue
-            
-            if min_date is None or dt < min_date:
-                min_date = dt
-            if max_date is None or dt > max_date:
-                max_date = dt
-        except (ValueError, AttributeError):
+        dt = _parse_date_cached(v.valuation_date or "")
+        if dt is None:
             continue
+        if min_date is None or dt < min_date:
+            min_date = dt
+        if max_date is None or dt > max_date:
+            max_date = dt
     
     if min_date is None or max_date is None:
         print(f"  Warning: Could not determine date range from valuations")
@@ -1455,7 +1471,7 @@ def load_training_dataset(cutoff_months: int = 12) -> Optional[List[PlayerFeatur
             player_id=item.get("player_id", ""),
             player_name=item.get("player_name", ""),
             current_value=item.get("current_value", 0),
-            age=item.get("age", 0),
+            age=_load_float(item.get("age")),
             position=item.get("position", "MID"),
             player_nationality=item.get("player_nationality", ""),
             player_nationality_bin=item.get("player_nationality_bin", "Other"),
@@ -1464,69 +1480,62 @@ def load_training_dataset(cutoff_months: int = 12) -> Optional[List[PlayerFeatur
             current_league=item.get("current_league", "Other"),
             league_tier=item.get("league_tier", "Other"),
             current_club=item.get("current_club", ""),
-            current_club_value=item.get("current_club_value", 0.0),
+            current_club_value=_load_float(item.get("current_club_value")),
             current_club_bin=item.get("current_club_bin", "Other"),
             valuation_date=val_date,
             max_value=item.get("max_value", 0),
             min_value=item.get("min_value", 0),
             avg_value=item.get("avg_value", 0),
-            value_6m_ago=item.get("value_6m_ago"),
+            last_valuation_date_num=_load_float(item.get("last_valuation_date_num")),
             value_1y_ago=item.get("value_1y_ago"),
             value_2y_ago=item.get("value_2y_ago"),
             value_3y_ago=item.get("value_3y_ago"),
             value_4y_ago=item.get("value_4y_ago"),
             value_5y_ago=item.get("value_5y_ago"),
-            trend_6m=item.get("trend_6m", 0),
-            trend_1y=item.get("trend_1y", 0),
-            trend_2y=item.get("trend_2y", 0),
-            trend_4y=item.get("trend_4y", 0),
-            trend_5y=item.get("trend_5y", 0),
-            pct_6m=item.get("pct_6m", 0),
-            pct_1y=item.get("pct_1y", 0),
-            pct_2y=item.get("pct_2y", 0),
-            pct_4y=item.get("pct_4y", 0),
-            pct_5y=item.get("pct_5y", 0),
-            diff_6m=item.get("diff_6m", 0),
-            diff_1y=item.get("diff_1y", 0),
-            diff_2y=item.get("diff_2y", 0),
-            diff_4y=item.get("diff_4y", 0),
-            diff_5y=item.get("diff_5y", 0),
+            trend_1y=_load_float(item.get("trend_1y")),
+            trend_2y=_load_float(item.get("trend_2y")),
+            trend_4y=_load_float(item.get("trend_4y")),
+            trend_5y=_load_float(item.get("trend_5y")),
+            pct_1y=_load_float(item.get("pct_1y")),
+            pct_2y=_load_float(item.get("pct_2y")),
+            pct_4y=_load_float(item.get("pct_4y")),
+            pct_5y=_load_float(item.get("pct_5y")),
+            diff_1y=_load_float(item.get("diff_1y")),
+            diff_2y=_load_float(item.get("diff_2y")),
+            diff_4y=_load_float(item.get("diff_4y")),
+            diff_5y=_load_float(item.get("diff_5y")),
             months_since_peak=item.get("months_since_peak", 0),
             num_valuations=item.get("num_valuations", 0),
             months_of_history=item.get("months_of_history", 0),
-            current_value_percentile=item.get("current_value_percentile", 0.0),
-            value_6m_ago_percentile=_load_float(item.get("value_6m_ago_percentile"), 0.0),
-            value_1y_ago_percentile=_load_float(item.get("value_1y_ago_percentile"), 0.0),
-            value_2y_ago_percentile=_load_float(item.get("value_2y_ago_percentile"), 0.0),
-            value_3y_ago_percentile=_load_float(item.get("value_3y_ago_percentile"), 0.0),
-            value_4y_ago_percentile=_load_float(item.get("value_4y_ago_percentile"), 0.0),
-            value_5y_ago_percentile=_load_float(item.get("value_5y_ago_percentile"), 0.0),
-            diff_percentile_6m=_load_float(item.get("diff_percentile_6m"), 0.0),
-            diff_percentile_1y=_load_float(item.get("diff_percentile_1y"), 0.0),
-            diff_percentile_2y=_load_float(item.get("diff_percentile_2y"), 0.0),
-            diff_percentile_3y=_load_float(item.get("diff_percentile_3y"), 0.0),
-            diff_percentile_4y=_load_float(item.get("diff_percentile_4y"), 0.0),
-            diff_percentile_5y=_load_float(item.get("diff_percentile_5y"), 0.0),
-            trend_percentile_6m=_load_float(item.get("trend_percentile_6m"), 0.0),
-            trend_percentile_1y=_load_float(item.get("trend_percentile_1y"), 0.0),
-            trend_percentile_2y=_load_float(item.get("trend_percentile_2y"), 0.0),
-            trend_percentile_3y=_load_float(item.get("trend_percentile_3y"), 0.0),
-            trend_percentile_4y=_load_float(item.get("trend_percentile_4y"), 0.0),
-            trend_percentile_5y=_load_float(item.get("trend_percentile_5y"), 0.0),
-            pct_percentile_6m=_load_float(item.get("pct_percentile_6m"), 0.0),
-            pct_percentile_1y=_load_float(item.get("pct_percentile_1y"), 0.0),
-            pct_percentile_2y=_load_float(item.get("pct_percentile_2y"), 0.0),
-            pct_percentile_3y=_load_float(item.get("pct_percentile_3y"), 0.0),
-            pct_percentile_4y=_load_float(item.get("pct_percentile_4y"), 0.0),
-            pct_percentile_5y=_load_float(item.get("pct_percentile_5y"), 0.0),
-            height=_load_float(item.get("height"), 0.0),
+            current_value_percentile=_load_float(item.get("current_value_percentile"), 0.0),
+            value_1y_ago_percentile=_load_float(item.get("value_1y_ago_percentile")),
+            value_2y_ago_percentile=_load_float(item.get("value_2y_ago_percentile")),
+            value_3y_ago_percentile=_load_float(item.get("value_3y_ago_percentile")),
+            value_4y_ago_percentile=_load_float(item.get("value_4y_ago_percentile")),
+            value_5y_ago_percentile=_load_float(item.get("value_5y_ago_percentile")),
+            diff_percentile_1y=_load_float(item.get("diff_percentile_1y")),
+            diff_percentile_2y=_load_float(item.get("diff_percentile_2y")),
+            diff_percentile_3y=_load_float(item.get("diff_percentile_3y")),
+            diff_percentile_4y=_load_float(item.get("diff_percentile_4y")),
+            diff_percentile_5y=_load_float(item.get("diff_percentile_5y")),
+            trend_percentile_1y=_load_float(item.get("trend_percentile_1y")),
+            trend_percentile_2y=_load_float(item.get("trend_percentile_2y")),
+            trend_percentile_3y=_load_float(item.get("trend_percentile_3y")),
+            trend_percentile_4y=_load_float(item.get("trend_percentile_4y")),
+            trend_percentile_5y=_load_float(item.get("trend_percentile_5y")),
+            pct_percentile_1y=_load_float(item.get("pct_percentile_1y")),
+            pct_percentile_2y=_load_float(item.get("pct_percentile_2y")),
+            pct_percentile_3y=_load_float(item.get("pct_percentile_3y")),
+            pct_percentile_4y=_load_float(item.get("pct_percentile_4y")),
+            pct_percentile_5y=_load_float(item.get("pct_percentile_5y")),
+            height=_load_float(item.get("height")),
             preferred_foot=item.get("preferred_foot", "Unknown"),
             num_positions=int(item.get("num_positions", 1)),
-            value_volatility=_load_float(item.get("value_volatility"), 0.0),
-            value_acceleration=_load_float(item.get("value_acceleration"), 0.0),
-            peak_ratio=_load_float(item.get("peak_ratio"), 1.0),
-            age_value_ratio=_load_float(item.get("age_value_ratio"), 0.0),
-            log_current_value=_load_float(item.get("log_current_value"), 0.0),
+            value_volatility=_load_float(item.get("value_volatility")),
+            value_acceleration=_load_float(item.get("value_acceleration")),
+            peak_ratio=_load_float(item.get("peak_ratio")),
+            age_value_ratio=_load_float(item.get("age_value_ratio")),
+            log_current_value=_load_float(item.get("log_current_value")),
             cutoff_season=item.get("cutoff_season", ""),
             target_value=item.get("target_value"),
         )
