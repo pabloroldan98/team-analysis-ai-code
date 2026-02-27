@@ -389,6 +389,7 @@ The knapsack optimizer can maximize different metrics depending on the user's st
 #### Advanced Filters
 
 - **League segmentation**: Restrict signings to specific leagues (e.g., only LaLiga and Premier League)
+- **Nationality filter**: Filter players by nationality (chip-based multi-select with search). An optional "Include second nationality" checkbox extends the filter to also match players' secondary nationalities.
 - **Banned clubs**: Exclude specific clubs as signing sources (searchable dropdown with chip-based selection)
 - **Banned players**: Exclude specific players from recommendations (searchable dropdown with live search)
 - **Temporal horizon**: Optimize for 1, 2, or 3 years ahead (multi-year predictions via iterative extrapolation)
@@ -418,7 +419,7 @@ This allows the user to quickly explore comparable options if a specific signing
 
 #### Fair Purchase Price Estimation
 
-The **fair price** for a player is computed using the **previous season's ML model** to predict the player's value at the current season's start date. For example, for the 2025-2026 season, the 2024-2025 model predicts what each player should be worth on 01/07/2025. This represents an independent "expected value" — if the current market value is below the fair price, the player is undervalued; if above, they're overvalued. When no previous model exists, the fair price falls back to the current model's prediction.
+The **fair price** for a player is computed using a **previous season's ML model** to predict the player's value at the current season's start date. For example, for the 2025-2026 season, the 2024-2025 model predicts what each player should be worth on 01/07/2025. This represents an independent "expected value" — if the current market value is below the fair price, the player is undervalued; if above, they're overvalued. The system walks backwards up to 10 seasons to find an available model; if none is found, it raises an error.
 
 #### Player Search
 
@@ -485,6 +486,7 @@ REST API endpoints:
 | `/api/seasons` | GET | List available seasons |
 | `/api/clubs` | GET | List clubs for a season |
 | `/api/leagues` | GET | List leagues for a season |
+| `/api/nationalities` | GET | List all distinct player nationalities |
 | `/api/load-squad` | POST | Load a club's squad with predictions |
 | `/api/sell-recommendations` | GET | Get sell recommendations for a club |
 | `/api/simulate` | POST | Run simulation (synchronous) |
