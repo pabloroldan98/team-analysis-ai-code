@@ -1,20 +1,50 @@
-import { useState, useEffect, useCallback } from "react";
-import type { Lang, SimulationResult, Club, Player, Analytics, XGrowthPlayer, PlayerAnalysis } from "../types";
+import { useState, useEffect } from "react";
+import type { Lang, Objective, SimulationResult, Club, Player } from "../types";
 import { t, formatCurrency, POS_ORDER, POS_KEYS } from "../i18n";
 import PlayerCard from "./PlayerCard";
 import { api } from "../api";
 
+function objectiveMetric(p: Player, obj: Objective): string | null {
+  if (obj === "smv") return null;
+  const pv = p.predicted_value ?? 0;
+  const mv = p.market_value ?? 0;
+  if (obj === "net_benefit") {
+    const nb = pv - mv;
+    return formatCurrency(nb);
+  }
+  if (obj === "roi") {
+    if (mv === 0) return "∞";
+    const roi = ((pv - mv) / mv) * 100;
+    if (!isFinite(roi)) return "∞";
+    return `${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%`;
+  }
+  if (obj === "growth_pct") {
+    if (mv === 0) return "∞";
+    const gp = (pv / mv) * 100;
+    if (!isFinite(gp)) return "∞";
+    return `${gp.toFixed(1)}%`;
+  }
+  return null;
+}
+
+const OBJ_LABELS: Record<string, Record<string, string>> = {
+  es: { net_benefit: "benef. neto", roi: "ROI", growth_pct: "crec." },
+  en: { net_benefit: "net benefit", roi: "ROI", growth_pct: "growth" },
+};
+
 /* ── SigningWithAlternatives ───────────────────────────────────────────── */
 
 function SigningWithAlternatives({
-  lang, player,
+  lang, player, objective = "smv",
 }: {
-  lang: Lang; player: Player;
+  lang: Lang; player: Player; objective?: Objective;
 }) {
   const [expanded, setExpanded] = useState(false);
   const alts = player.alternatives ?? [];
   const fpLabel = player.fair_price != null ? ` · ${t(lang, "fair_price")}: ${formatCurrency(player.fair_price)}` : "";
-  const detail = `${t(lang, POS_KEYS[player.position] || "pos_def")} · ${formatCurrency(player.market_value)} → ${formatCurrency(player.predicted_value)} ${t(lang, "predicted")}${fpLabel} · ${t(lang, "from_team", { team: player.team || "?" })}`;
+  const objVal = objectiveMetric(player, objective);
+  const objLabel = objVal ? ` (${(OBJ_LABELS[lang] || OBJ_LABELS.en)[objective]}: ${objVal})` : "";
+  const detail = `${t(lang, POS_KEYS[player.position] || "pos_def")} · ${formatCurrency(player.market_value)} → ${formatCurrency(player.predicted_value)} ${t(lang, "predicted")}${objLabel}${fpLabel} · ${t(lang, "from_team", { team: player.team || "?" })}`;
 
   return (
     <div>
@@ -39,23 +69,27 @@ function SigningWithAlternatives({
           {alts.map((a) => (
             <div
               key={a.player_id}
-              className="flex items-center justify-between text-sm bg-gray-50 rounded-lg px-3 py-1.5"
+              className="text-sm bg-gray-50 rounded-lg px-3 py-1.5"
             >
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-center gap-2">
                 {a.img_url ? (
                   <img src={a.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
                 ) : (
                   <div className="w-6 h-6 rounded-full bg-gray-200" />
                 )}
                 <span className="font-medium truncate">{a.name}</span>
-                <span className="text-xs text-gray-400">{a.team}</span>
+                <span className="text-xs text-gray-400 shrink-0">{a.team}</span>
               </div>
-              <div className="flex items-center gap-3 shrink-0 ml-2 text-xs">
+              <div className="flex items-center gap-2 flex-wrap ml-8 text-xs mt-0.5">
                 <span className="text-gray-500">{formatCurrency(a.market_value)}</span>
                 <span className="text-gray-400">→</span>
                 <span className={`font-semibold ${(a.predicted_value ?? 0) >= (a.market_value ?? 0) ? "text-green-600" : "text-red-500"}`}>
                   {formatCurrency(a.predicted_value)}
                 </span>
+                {objective !== "smv" && (() => {
+                  const v = objectiveMetric(a, objective);
+                  return v ? <span className="text-gray-400">({(OBJ_LABELS[lang] || OBJ_LABELS.en)[objective]}: {v})</span> : null;
+                })()}
                 {a.fair_price != null && (
                   <span className="text-gray-400">({t(lang, "fair_price")}: {formatCurrency(a.fair_price)})</span>
                 )}
@@ -130,7 +164,7 @@ function FinalSquad({
                   <div
                     key={p.player_id}
                     className={`text-center ${
-                      isNew ? "border-l-[3px] border-green-500 pl-1.5" : ""
+                      isNew ? "border-l-[3px] border-green-500 pl-0.5" : ""
                     }`}
                   >
                     {p.img_url ? (
@@ -163,253 +197,6 @@ function FinalSquad({
           </div>
         );
       })}
-    </div>
-  );
-}
-
-/* ── AnalyticsSection ───────────────────────────────────────────────────── */
-
-function XGrowthTable({ lang, players }: { lang: Lang; players: XGrowthPlayer[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b text-left text-xs text-gray-500">
-            <th className="py-2 pr-3">#</th>
-            <th className="py-2 pr-3">{t(lang, "xgrowth_col_player")}</th>
-            <th className="py-2 pr-3">Pos</th>
-            <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_col_value")}</th>
-            <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_col_predicted")}</th>
-            <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_label")}</th>
-            <th className="py-2 text-right">{t(lang, "fair_price")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {players.map((p, i) => (
-            <tr key={p.player_id} className="border-b border-gray-100 hover:bg-gray-50">
-              <td className="py-1.5 pr-3 text-xs text-gray-400">{i + 1}</td>
-              <td className="py-1.5 pr-3 font-medium">
-                <div className="flex items-center gap-2">
-                  {p.img_url ? (
-                    <img src={p.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
-                  ) : (
-                    <div className="w-6 h-6 rounded-full bg-gray-200" />
-                  )}
-                  <span>{p.name}</span>
-                  <span className="text-[10px] text-gray-400">{p.team}</span>
-                </div>
-              </td>
-              <td className="py-1.5 pr-3 text-xs">{p.position}</td>
-              <td className="py-1.5 pr-3 text-right text-xs">{formatCurrency(p.market_value)}</td>
-              <td className="py-1.5 pr-3 text-right text-xs">{formatCurrency(p.predicted_value)}</td>
-              <td className={`py-1.5 pr-3 text-right text-xs font-semibold ${p.xgrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
-                {(p.xgrowth >= 0 ? "+" : "") + (p.xgrowth * 100).toFixed(1) + "%"}
-              </td>
-              <td className="py-1.5 text-right text-xs">{formatCurrency(p.fair_price)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function SigningAnalysis({ lang, analysis }: { lang: Lang; analysis: PlayerAnalysis[] }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  return (
-    <div className="space-y-4">
-      {analysis.map((a) => {
-        const isExpanded = expanded === a.player_id;
-        return (
-          <div key={a.player_id} className="border rounded-lg p-3">
-            <button
-              onClick={() => setExpanded(isExpanded ? null : a.player_id)}
-              className="w-full flex items-center justify-between text-left"
-            >
-              <div className="flex items-center gap-3">
-                {a.img_url ? (
-                  <img src={a.img_url} alt="" className="w-8 h-8 rounded-full object-cover bg-gray-200" />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-gray-200" />
-                )}
-                <div>
-                  <span className="font-semibold text-sm">{a.name}</span>
-                  <span className="text-xs text-gray-400 ml-2">{a.position} · {a.team}</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 text-xs">
-                <span>{formatCurrency(a.market_value)}</span>
-                <span className="text-gray-400">→</span>
-                <span>{formatCurrency(a.predicted_value)}</span>
-                <span className={`font-semibold ${a.xgrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
-                  {(a.xgrowth >= 0 ? "+" : "") + (a.xgrowth * 100).toFixed(1) + "%"}
-                </span>
-                <span className="text-gray-500">{t(lang, "fair_price")}: {formatCurrency(a.fair_price)}</span>
-                <span className="text-gray-400">{isExpanded ? "▲" : "▼"}</span>
-              </div>
-            </button>
-            {isExpanded && a.similar_players.length > 0 && (
-              <div className="mt-3 ml-4 border-l-2 border-primary/20 pl-3">
-                <p className="text-xs text-gray-500 mb-2">{t(lang, "similar_help")}</p>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b text-left text-gray-400">
-                      <th className="py-1 pr-2">{t(lang, "xgrowth_col_player")}</th>
-                      <th className="py-1 pr-2">Team</th>
-                      <th className="py-1 pr-2 text-right">{t(lang, "xgrowth_col_value")}</th>
-                      <th className="py-1 pr-2 text-right">{t(lang, "xgrowth_label")}</th>
-                      <th className="py-1 pr-2 text-right">{t(lang, "fair_price")}</th>
-                      <th className="py-1 text-right">{t(lang, "similarity_label")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {a.similar_players.map((sp) => (
-                      <tr key={sp.player_id} className="border-b border-gray-50">
-                        <td className="py-1 pr-2 font-medium">{sp.name}</td>
-                        <td className="py-1 pr-2 text-gray-400">{sp.team}</td>
-                        <td className="py-1 pr-2 text-right">{formatCurrency(sp.market_value)}</td>
-                        <td className={`py-1 pr-2 text-right font-semibold ${sp.xgrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
-                          {(sp.xgrowth >= 0 ? "+" : "") + (sp.xgrowth * 100).toFixed(1) + "%"}
-                        </td>
-                        <td className="py-1 pr-2 text-right">{formatCurrency(sp.fair_price)}</td>
-                        <td className="py-1 text-right">{(sp.similarity * 100).toFixed(0)}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function AnalyticsSection({
-  lang, clubName, season,
-}: {
-  lang: Lang; clubName: string; season: string;
-}) {
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<"xgrowth" | "similar" | "fair">("xgrowth");
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await api.getAnalytics(clubName, season);
-      setAnalytics(data);
-    } catch {
-      /* ignore */
-    } finally {
-      setLoading(false);
-    }
-  }, [clubName, season]);
-
-  useEffect(() => { load(); }, [load]);
-
-  if (loading) {
-    return (
-      <div className="text-center py-6 text-sm text-gray-400">
-        {t(lang, "loading_analytics")}
-      </div>
-    );
-  }
-  if (!analytics) return null;
-
-  const tabs = [
-    { key: "xgrowth" as const, label: t(lang, "xgrowth_title") },
-    { key: "similar" as const, label: t(lang, "similar_title") },
-    { key: "fair" as const, label: t(lang, "fair_price") },
-  ];
-
-  return (
-    <div>
-      <h3 className="section-title">{t(lang, "analytics_section")}</h3>
-
-      {/* tab bar */}
-      <div className="flex gap-1 mb-4 border-b">
-        {tabs.map((tb) => (
-          <button
-            key={tb.key}
-            onClick={() => setTab(tb.key)}
-            className={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
-              tab === tb.key
-                ? "border-primary text-primary-dark"
-                : "border-transparent text-gray-400 hover:text-gray-600"
-            }`}
-          >
-            {tb.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "xgrowth" && (
-        <>
-          <p className="text-xs text-gray-500 mb-3">{t(lang, "xgrowth_help")}</p>
-          <XGrowthTable lang={lang} players={analytics.xgrowth_ranking} />
-        </>
-      )}
-
-      {tab === "similar" && (
-        <>
-          <p className="text-xs text-gray-500 mb-3">{t(lang, "similar_help")}</p>
-          <SigningAnalysis lang={lang} analysis={analytics.signing_analysis} />
-        </>
-      )}
-
-      {tab === "fair" && analytics.signing_analysis.length > 0 && (
-        <>
-          <p className="text-xs text-gray-500 mb-3">
-            {lang === "es"
-              ? "El precio justo es el valor predicho del jugador: punto de equilibrio para el comprador."
-              : "Fair price is the player's predicted value: break-even point for the buyer."}
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-gray-500">
-                  <th className="py-2 pr-3">{t(lang, "xgrowth_col_player")}</th>
-                  <th className="py-2 pr-3">Pos</th>
-                  <th className="py-2 pr-3 text-right">{lang === "es" ? "Coste" : "Cost"}</th>
-                  <th className="py-2 pr-3 text-right">{t(lang, "fair_price")}</th>
-                  <th className="py-2 pr-3 text-right">Δ</th>
-                  <th className="py-2 text-right">{t(lang, "xgrowth_label")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {analytics.signing_analysis.map((a) => {
-                  const delta = a.fair_price - a.market_value;
-                  return (
-                    <tr key={a.player_id} className="border-b border-gray-100 hover:bg-gray-50">
-                      <td className="py-1.5 pr-3 font-medium">
-                        <div className="flex items-center gap-2">
-                          {a.img_url ? (
-                            <img src={a.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
-                          ) : (
-                            <div className="w-6 h-6 rounded-full bg-gray-200" />
-                          )}
-                          <span>{a.name}</span>
-                        </div>
-                      </td>
-                      <td className="py-1.5 pr-3 text-xs">{a.position}</td>
-                      <td className="py-1.5 pr-3 text-right text-xs">{formatCurrency(a.market_value)}</td>
-                      <td className="py-1.5 pr-3 text-right text-xs font-semibold">{formatCurrency(a.fair_price)}</td>
-                      <td className={`py-1.5 pr-3 text-right text-xs font-semibold ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        {formatCurrency(delta)}
-                      </td>
-                      <td className={`py-1.5 text-right text-xs font-semibold ${a.xgrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        {(a.xgrowth >= 0 ? "+" : "") + (a.xgrowth * 100).toFixed(1) + "%"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
     </div>
   );
 }
@@ -475,9 +262,10 @@ interface Props {
   result: SimulationResult;
   clubs: Club[];
   squad: Player[];
+  objective?: Objective;
 }
 
-export default function ResultsPanel({ lang, result, clubs, squad }: Props) {
+export default function ResultsPanel({ lang, result, clubs, squad, objective = "smv" }: Props) {
   const clubLogo = clubs.find(
     (c) => c.name.toLowerCase() === result.club_name.toLowerCase()
   )?.logo_url;
@@ -574,7 +362,7 @@ export default function ResultsPanel({ lang, result, clubs, squad }: Props) {
                 }).join(", ")}
               </p>
               {result.recommended_signings.map((p) => (
-                <SigningWithAlternatives key={p.player_id} lang={lang} player={p} />
+                <SigningWithAlternatives key={p.player_id} lang={lang} player={p} objective={objective} />
               ))}
             </>
           )}
@@ -617,10 +405,6 @@ export default function ResultsPanel({ lang, result, clubs, squad }: Props) {
           signings={result.recommended_signings}
         />
       </div>
-
-      {/* Analytics */}
-      <hr className="border-gray-200" />
-      <AnalyticsSection lang={lang} clubName={result.club_name} season={result.season} />
 
       {/* AI Analysis */}
       <hr className="border-gray-200" />

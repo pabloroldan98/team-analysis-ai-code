@@ -98,7 +98,8 @@ def _players_to_knapsack_format(
         
         # Value to maximize: predicted_value or market_value (scaled to int)
         if use_predicted_value:
-            value = int(round((p.predicted_value or p.market_value or 0.0) / _PRICE_SCALE))
+            pv = p.predicted_value if p.predicted_value is not None else (p.market_value or 0.0)
+            value = max(0, int(round(pv / _PRICE_SCALE)))
         else:
             value = int(round(mv / _PRICE_SCALE))
         

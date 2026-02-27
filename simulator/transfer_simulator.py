@@ -1352,31 +1352,42 @@ class TransferSimulator:
         Alternatives come from the pool of available players used in the
         last ``run()`` call, filtered to:
           - same position as *signing*
-          - market_value <= signing's market_value
+          - market_value <= signing's market_value (preferred)
           - not in *exclude_ids* (other recommended signings)
 
         Sorted by the same objective that was used in the simulation.
+        If the price constraint yields fewer than *n* candidates, the
+        remaining slots are filled from the broader same-position pool.
         """
         pool = getattr(self, "_last_available_players", None)
         objective = getattr(self, "_last_objective", "smv")
         if not pool:
+            print(f"[WARN] get_alternatives: pool is empty for {signing.name}")
             return []
 
         exclude = exclude_ids or set()
         max_price = signing.market_value or 0
 
+        def _base_filter(p: Player) -> bool:
+            return (
+                p.position == signing.position
+                and p.player_id not in exclude
+                and p.player_id != signing.player_id
+                and (p.market_value or 0) > 0
+            )
+
         candidates = [
             p for p in pool
-            if p.position == signing.position
-            and p.player_id not in exclude
-            and p.player_id != signing.player_id
-            and (p.market_value or 0) <= max_price
-            and (p.market_value or 0) > 0
+            if _base_filter(p) and (p.market_value or 0) <= max_price
         ]
 
+        import math
+
         def _score(p: Player) -> float:
-            pv = p.predicted_value or 0
+            pv = p.predicted_value if p.predicted_value is not None else 0
             mv = p.market_value or 1
+            if isinstance(pv, float) and (math.isnan(pv) or math.isinf(pv)):
+                pv = 0
             if objective == "net_benefit" or objective == "value_growth":
                 return pv - mv
             elif objective == "roi":
@@ -1386,6 +1397,17 @@ class TransferSimulator:
             return pv  # smv
 
         candidates.sort(key=_score, reverse=True)
+
+        if len(candidates) < n:
+            used_ids = {p.player_id for p in candidates}
+            extra = [
+                p for p in pool
+                if _base_filter(p)
+                and p.player_id not in used_ids
+            ]
+            extra.sort(key=_score, reverse=True)
+            candidates.extend(extra[: n - len(candidates)])
+
         return candidates[:n]
 
 
