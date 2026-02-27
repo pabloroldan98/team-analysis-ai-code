@@ -121,57 +121,58 @@ def _compute_fair_prices(
     verbose: bool = False,
 ) -> Dict[str, float]:
     """
-    Fair price = what the previous season's model predicted for the current cutoff.
+    Fair price = the current season's model re-predicting at the same cutoff.
 
-    For season 2025-2026 we use the 2024-2025 model with features built at
-    2024-07-01 (prev season cutoff) to predict the value at ~2025-07-01.
-    If the previous model doesn't exist, falls back to the current season's model.
+    Uses the same features the predicted_value was computed with, so fair_price
+    will be very close to predicted_value.  Falls back to the previous season's
+    model only when the current season's model does not exist.
     """
-    prev_season = _get_previous_season(season)
-    if prev_season is None:
-        return {}
-
-    prev_start_year = int(prev_season.split("-")[0])
-    prev_cutoff = datetime(prev_start_year, 7, 1)
-
-    prev_model_path = MODELS_DIR / f"value_model_{prev_season}.joblib"
-    if not prev_model_path.exists():
-        if verbose:
-            print(f"  ⚠ No previous model ({prev_model_path.name}), fair_price = predicted_value")
-        return {}
+    # Try current season model first, then previous
+    model_season = season
+    model_path = MODELS_DIR / f"value_model_{season}.joblib"
+    if not model_path.exists():
+        prev = _get_previous_season(season)
+        if prev is None:
+            return {}
+        model_path = MODELS_DIR / f"value_model_{prev}.joblib"
+        model_season = prev
+        if not model_path.exists():
+            if verbose:
+                print(f"  ⚠ No model for {season} or {prev}, fair_price = predicted_value")
+            return {}
 
     if verbose:
-        print(f"\n[4b] Computing fair prices with {prev_season} model (cutoff {prev_cutoff.strftime('%Y-%m-%d')})...")
+        print(f"\n[4b] Computing fair prices with {model_season} model (cutoff {cutoff_date.strftime('%Y-%m-%d')})...")
 
-    prev_predictor = None
+    predictor = None
     try:
-        seg = SegmentedValuePredictor(prev_season)
+        seg = SegmentedValuePredictor(model_season)
         if seg.is_trained:
-            prev_predictor = seg
+            predictor = seg
             if verbose:
-                print(f"  Using segmented predictor ({prev_season})")
+                print(f"  Using segmented predictor ({model_season})")
     except Exception:
         pass
-    if prev_predictor is None:
-        prev_predictor = ValuePredictor(prev_model_path)
+    if predictor is None:
+        predictor = ValuePredictor(model_path)
 
-    prev_transfer_map, prev_by_player, prev_team_total_values = build_prediction_context(
-        all_valuations, prev_cutoff, verbose=verbose
+    transfer_map, by_player, team_total_values = build_prediction_context(
+        all_valuations, cutoff_date, verbose=verbose
     )
 
-    prev_features = build_prediction_dataset(
+    features = build_prediction_dataset(
         all_valuations,
-        prev_cutoff,
+        cutoff_date,
         players=player_dict,
         team_league_mapping=team_league_mapping,
-        transfer_map=prev_transfer_map,
-        by_player=prev_by_player,
-        team_total_values=prev_team_total_values,
+        transfer_map=transfer_map,
+        by_player=by_player,
+        team_total_values=team_total_values,
         verbose=verbose,
     )
 
-    prev_predictions = prev_predictor.predict_batch(prev_features)
-    return {f.player_id: pred for f, pred in zip(prev_features, prev_predictions)}
+    predictions = predictor.predict_batch(features)
+    return {f.player_id: pred for f, pred in zip(features, predictions)}
 
 
 def _get_cutoff_date(season: str, override_date: Optional[str] = None) -> datetime:

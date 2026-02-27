@@ -480,7 +480,7 @@ def _enrich_fair_prices(
     valuations: List[Valuation],
     season: str,
 ) -> None:
-    """Set fair_price on each player using the previous season's model."""
+    """Set fair_price using the current season's model (fallback: previous)."""
     try:
         from ml.value_predictor import (
             ValuePredictor, SegmentedValuePredictor, predict_player_values,
@@ -488,41 +488,54 @@ def _enrich_fair_prices(
     except ImportError:
         return
 
+    from ml.value_predictor import MODELS_DIR
+
     if season.lower() == "today":
         now = datetime.now()
         start = now.year if now.month >= 7 else now.year - 1
-        prev_start = start - 1
     else:
-        prev_start = int(season.split("-")[0]) - 1
-    prev_season = f"{prev_start}-{prev_start + 1}"
+        start = int(season.split("-")[0])
 
-    from ml.value_predictor import MODELS_DIR
-    prev_model_path = MODELS_DIR / f"value_model_{prev_season}.joblib"
-    if not prev_model_path.exists():
-        return
+    cutoff = _get_season_start_date(season)
 
-    prev_predictor = None
+    # Walk backwards from current season until a model is found
+    model_path = None
+    model_season = None
+    for offset in range(0, 10):
+        s = start - offset
+        candidate_season = f"{s}-{s + 1}"
+        candidate_path = MODELS_DIR / f"value_model_{candidate_season}.joblib"
+        if candidate_path.exists():
+            model_season = candidate_season
+            model_path = candidate_path
+            break
+    if model_path is None or model_season is None:
+        raise FileNotFoundError(
+            f"No value model found for season {season} or any of the 10 preceding seasons "
+            f"in {MODELS_DIR}"
+        )
+
+    predictor = None
     try:
-        seg = SegmentedValuePredictor(prev_season)
+        seg = SegmentedValuePredictor(model_season)
         if seg.is_trained:
-            prev_predictor = seg
+            predictor = seg
     except Exception:
         pass
-    if prev_predictor is None:
+    if predictor is None:
         try:
-            prev_predictor = ValuePredictor(prev_model_path)
+            predictor = ValuePredictor(model_path)
         except Exception:
             return
 
-    prev_cutoff = datetime(prev_start, 7, 1)
-    prev_preds = predict_player_values(
+    preds = predict_player_values(
         valuations,
-        prev_cutoff,
-        prev_predictor,
+        cutoff,
+        predictor,
         players={p.player_id: p for p in players},
     )
     for p in players:
-        fp = prev_preds.get(p.player_id)
+        fp = preds.get(p.player_id)
         if fp is not None:
             p.fair_price = fp
         elif p.fair_price is None:
@@ -587,7 +600,6 @@ def enrich_players_with_predictions(
         if pred_value is not None:
             p.predicted_value = pred_value
 
-    # Fair price via previous season's model
     _enrich_fair_prices(players, valuations, season)
 
     return players
