@@ -83,18 +83,18 @@ class ValuePredictor:
             "Czech Republic", "Denmark", "Ecuador", "Egypt", "England", "France",
             "Germany", "Ghana", "Greece", "Hungary", "Iran", "Italy", "Japan",
             "Kosovo", "Mexico", "Morocco", "Netherlands", "Nigeria",
-            "North Macedonia", "Norway", "Other", "Paraguay", "Peru", "Poland",
-            "Portugal", "Qatar", "Romania", "Russia", "Saudi Arabia", "Scotland",
-            "Senegal", "Serbia", "Slovakia", "Slovenia", "South Africa", "Spain",
-            "Sweden", "Switzerland", "Ukraine", "United Arab Emirates",
-            "United States", "Uruguay", "Wales",
+            "North Macedonia", "Norway", "Other", "None", "Paraguay", "Peru",
+            "Poland", "Portugal", "Qatar", "Romania", "Russia", "Saudi Arabia",
+            "Scotland", "Senegal", "Serbia", "Slovakia", "Slovenia",
+            "South Africa", "Spain", "Sweden", "Switzerland", "Ukraine",
+            "United Arab Emirates", "United States", "Uruguay", "Wales",
         },
-        "current_club_bin": set(TOP_CLUBS) | {"Other"},
+        "current_club_bin": set(TOP_CLUBS) | {"Other", "None"},
         "current_league": {
-            "laliga", "premier", "seriea", "bundesliga", "ligue1", "Other",
+            "laliga", "premier", "seriea", "bundesliga", "ligue1", "Other", "None",
         },
-        "league_tier": {"1", "Other"},
-        "preferred_foot": {"Left", "Right", "Both", "Unknown"},
+        "league_tier": {"1", "Other", "None"},
+        "preferred_foot": {"left", "right", "both", "Left", "Right", "Both", "Unknown"},
     }
     
     def __init__(self, model_path: Optional[Path] = None):
@@ -203,15 +203,17 @@ class ValuePredictor:
         # 
         # Then in predict(): return np.expm1(self.model.predict(X))
         
-        # Unify categories: val may have values unseen in train → map to "Other"
+        # Unify categories: val may have values unseen in train → map to "Other" / "None"
         for col in self.CATEGORICAL_FEATURES:
             if col not in X_train.columns:
                 continue
             train_cats = set(X_train[col].dropna().unique())
             X_val[col] = X_val[col].apply(
-                lambda v, cats=train_cats: v if v in cats else "Other"
+                lambda v, cats=train_cats: v if v in cats else (
+                    "None" if v in (None, "", "nan", "None") else "Other"
+                )
             )
-            all_cats = sorted(train_cats | {"Other"})
+            all_cats = sorted(train_cats | {"Other", "None"})
             cat_type = pd.CategoricalDtype(categories=all_cats)
             X_train[col] = X_train[col].astype(cat_type)
             X_val[col] = X_val[col].astype(cat_type)
@@ -251,7 +253,7 @@ class ValuePredictor:
         
         self.is_trained = True
         self._category_mappings = {
-            col: set(X_train[col].dropna().astype(str).unique()) | {"Other"}
+            col: set(X_train[col].dropna().astype(str).unique()) | {"Other", "None"}
             for col in self.CATEGORICAL_FEATURES
             if col in X_train.columns
         }
@@ -313,8 +315,8 @@ class ValuePredictor:
             valid = allowed.get(col)
             if valid is None:
                 continue
-            X[col] = X[col].fillna("Other").astype(str).apply(
-                lambda v: v if v in valid else "Other"
+            X[col] = X[col].fillna("None").astype(str).apply(
+                lambda v: v if v in valid else ("None" if v in ("", "nan", "None") else "Other")
             )
         return X
     

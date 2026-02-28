@@ -474,14 +474,19 @@ def train_segmented_models(
                 print(f"  Segment {seg_name}: only {len(seg_data)} samples — skipping (will use global fallback)")
             continue
 
+        # Determine how many seasons this segment spans
+        seg_seasons = sorted(set(f.cutoff_season for f in seg_data if f.cutoff_season))
+        seg_test_years = min(test_years, max(1, len(seg_seasons) - 1))
+
         if verbose:
             print(f"\n{'='*60}")
-            print(f"Training segment: {seg_name}  ({len(seg_data)} samples)")
+            print(f"Training segment: {seg_name}  ({len(seg_data)} samples, "
+                  f"{len(seg_seasons)} seasons, test_years={seg_test_years})")
             print(f"{'='*60}")
 
         predictor = ValuePredictor()
         try:
-            predictor.train(seg_data, test_years=test_years, verbose=verbose, **xgb_params)
+            predictor.train(seg_data, test_years=seg_test_years, verbose=verbose, **xgb_params)
         except ValueError as e:
             if verbose:
                 print(f"  Segment {seg_name} failed: {e} — skipping")

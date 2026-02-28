@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
+from tqdm import tqdm
 
 _ROOT = Path(__file__).parent
 if str(_ROOT) not in sys.path:
@@ -60,7 +61,10 @@ MAX_RETRIES = 5
 RETRY_PAUSE = 10        # seconds between retries
 REQUEST_DELAY = 0.3     # polite delay between API requests
 
+BATCH_SIZE = 200
+
 DEFAULT_IMG_MARKERS = ["default.jpg", "default.png"]
+UNKNOWN = "Unknown"
 
 FILLABLE_STRING_FIELDS = [
     "name", "position", "main_position", "birth_date",
@@ -68,6 +72,10 @@ FILLABLE_STRING_FIELDS = [
 ]
 FILLABLE_LIST_FIELDS = ["other_positions", "other_nationalities"]
 FILLABLE_NUMBER_FIELDS = ["height"]
+
+# Fields that can be "Unknown" (API confirmed no data) vs null (never checked).
+# For these, real value > "Unknown" > null/empty.
+FIELDS_WITH_UNKNOWN = {"birth_date", "height", "preferred_foot"}
 
 CRITICAL_FIELDS_FOR_API = [
     "name", "position", "birth_date", "height",
@@ -98,7 +106,23 @@ def _season_cutoff(season: str) -> Optional[datetime]:
     return datetime(int(m.group(1)), 7, 1) if m else None
 
 
+def _is_unknown(val: Any) -> bool:
+    return val == UNKNOWN
+
+
+def _has_real_value_str(val: Any) -> bool:
+    """True if val is a non-empty, non-Unknown string."""
+    return not _is_empty_str(val) and val != UNKNOWN
+
+
+def _has_real_value_num(val: Any) -> bool:
+    """True if val is a real number (not None, not 'Unknown')."""
+    return val is not None and val != UNKNOWN
+
+
 def _compute_age(birth_date_str: str, cutoff: datetime) -> Optional[int]:
+    if not birth_date_str or birth_date_str == UNKNOWN:
+        return None
     for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
         try:
             bd = datetime.strptime(birth_date_str, fmt)
@@ -135,16 +159,15 @@ def _extract_season(base: str) -> str:
 def load_all_player_files() -> List[FileRecord]:
     result: List[FileRecord] = []
     bases = list_json_bases("players_all_*.json")
-    print(f"Loading player files from {DATA_DIR} …")
 
-    for base in bases:
+    for base in tqdm(bases, desc="Loading player files", unit="file"):
         season = _extract_season(base)
         if not season:
             continue
         try:
             raw = load_json(base)
         except Exception as exc:
-            print(f"  SKIP {base}: {exc}")
+            tqdm.write(f"  SKIP {base}: {exc}")
             continue
         if raw is None:
             continue
@@ -175,7 +198,7 @@ def build_player_master(file_records: List[FileRecord]) -> Dict[str, dict]:
 
     master: Dict[str, dict] = {}
 
-    for pid, srecs in player_recs.items():
+    for pid, srecs in tqdm(player_recs.items(), desc="Building master dict", unit="player"):
         best: dict = {"player_id": pid}
 
         for field in FILLABLE_STRING_FIELDS:
@@ -199,6 +222,20 @@ def build_player_master(file_records: List[FileRecord]) -> Dict[str, dict]:
                     if v and v != "N/A":
                         best[field] = v
                         break
+            elif field in FIELDS_WITH_UNKNOWN:
+                # 1st pass: real value (not empty, not Unknown)
+                for _s, r in srecs:
+                    v = r.get(field)
+                    if _has_real_value_str(v):
+                        best[field] = v
+                        break
+                # 2nd pass: accept Unknown
+                if field not in best:
+                    for _s, r in srecs:
+                        v = r.get(field)
+                        if not _is_empty_str(v):
+                            best[field] = v
+                            break
             else:
                 for _s, r in srecs:
                     v = r.get(field)
@@ -207,11 +244,26 @@ def build_player_master(file_records: List[FileRecord]) -> Dict[str, dict]:
                         break
 
         for field in FILLABLE_NUMBER_FIELDS:
-            for _s, r in srecs:
-                v = r.get(field)
-                if v is not None:
-                    best[field] = v
-                    break
+            if field in FIELDS_WITH_UNKNOWN:
+                # 1st pass: real number (not None, not "Unknown")
+                for _s, r in srecs:
+                    v = r.get(field)
+                    if _has_real_value_num(v):
+                        best[field] = v
+                        break
+                # 2nd pass: accept "Unknown"
+                if field not in best:
+                    for _s, r in srecs:
+                        v = r.get(field)
+                        if v is not None:
+                            best[field] = v
+                            break
+            else:
+                for _s, r in srecs:
+                    v = r.get(field)
+                    if v is not None:
+                        best[field] = v
+                        break
 
         for field in FILLABLE_LIST_FIELDS:
             longest: list = []
@@ -236,7 +288,7 @@ def apply_master(
     """Fill missing fields in-place. Returns modified base names."""
     modified: Set[str] = set()
 
-    for base, _season, records in file_records:
+    for base, _season, records in tqdm(file_records, desc="Applying master", unit="file"):
         changed = False
         for rec in records:
             pid = rec.get("player_id")
@@ -260,6 +312,14 @@ def apply_master(
                     elif _is_default_img(cur) and not _is_default_img(new):
                         rec[field] = new
                         changed = True
+                elif field in FIELDS_WITH_UNKNOWN:
+                    # Upgrade: empty → Unknown or real; Unknown → real
+                    if _is_empty_str(cur) and not _is_empty_str(new):
+                        rec[field] = new
+                        changed = True
+                    elif _is_unknown(cur) and _has_real_value_str(new):
+                        rec[field] = new
+                        changed = True
                 else:
                     if _is_empty_str(cur) and not _is_empty_str(new):
                         rec[field] = new
@@ -268,9 +328,20 @@ def apply_master(
             for field in FILLABLE_NUMBER_FIELDS:
                 if field not in best:
                     continue
-                if rec.get(field) is None:
-                    rec[field] = best[field]
-                    changed = True
+                cur = rec.get(field)
+                new = best[field]
+                if field in FIELDS_WITH_UNKNOWN:
+                    # Upgrade: None → Unknown or real; Unknown → real
+                    if cur is None and new is not None:
+                        rec[field] = new
+                        changed = True
+                    elif _is_unknown(cur) and _has_real_value_num(new):
+                        rec[field] = new
+                        changed = True
+                else:
+                    if cur is None:
+                        rec[field] = new
+                        changed = True
 
             for field in FILLABLE_LIST_FIELDS:
                 if field not in best:
@@ -289,24 +360,33 @@ def apply_master(
 
 # ── API helpers ──────────────────────────────────────────────────────────────
 
-def _api_get(url: str, timeout: int = 30) -> Optional[dict]:
+def _api_get(url: str, timeout: int = 60) -> Optional[dict]:
+    """GET with retry logic.  Returns parsed JSON, ``{"_status": code}`` on
+    persistent transient errors (414/429/5xx), or ``None`` on hard failure."""
+    last_transient_code = None
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             time.sleep(REQUEST_DELAY)
             resp = requests.get(url, timeout=timeout)
             if resp.status_code == 200:
                 return resp.json()
-            if resp.status_code == 404:
-                return None
+            if resp.status_code == 414:
+                return {"_status": 414}
             if resp.status_code in (429, 500, 502, 503, 504):
-                print(f"    Attempt {attempt}/{MAX_RETRIES}: HTTP {resp.status_code}")
+                last_transient_code = resp.status_code
+                tqdm.write(f"    Attempt {attempt}/{MAX_RETRIES}: HTTP {resp.status_code}")
             else:
-                print(f"    HTTP {resp.status_code} – giving up for {url}")
+                tqdm.write(f"    HTTP {resp.status_code} – giving up")
                 return None
         except Exception as exc:
-            print(f"    Attempt {attempt}/{MAX_RETRIES}: {exc!r}")
+            last_transient_code = last_transient_code or 429
+            tqdm.write(f"    Attempt {attempt}/{MAX_RETRIES}: {exc!r}")
         if attempt < MAX_RETRIES:
             time.sleep(RETRY_PAUSE)
+
+    if last_transient_code is not None:
+        return {"_status": last_transient_code}
     return None
 
 
@@ -314,30 +394,25 @@ def _normalize_position_group(group: str) -> str:
     return POSITION_GROUP_MAP.get(group.upper(), "N/A") if group else "N/A"
 
 
-def fetch_player_from_api(player_id: str) -> Optional[dict]:
-    """Fetch one player from Transfermarkt API and normalise fields."""
-    resp = _api_get(f"{TM_API_URL}/player/{player_id}")
-    if not resp or not resp.get("success"):
-        return None
-
-    d = resp.get("data") or {}
-    if not d:
-        return None
-
+def _parse_player_data(d: dict) -> dict:
+    """Normalise a single player object from the Transfermarkt API."""
     attrs = d.get("attributes") or {}
     life = d.get("lifeDates") or {}
 
-    # birth_date (YYYY-MM-DD → DD/MM/YYYY)
-    raw_bd = life.get("dateOfBirth", "")
-    birth_date = ""
-    if raw_bd:
+    # birth_date: "Unknown" if API confirms unknown or dateOfBirth is null
+    is_bd_unknown = life.get("isDateOfBirthUnknown", False)
+    raw_bd = life.get("dateOfBirth")
+    birth_date: Any = ""
+    if is_bd_unknown or raw_bd is None:
+        birth_date = UNKNOWN
+    elif raw_bd:
         try:
             birth_date = datetime.strptime(raw_bd, "%Y-%m-%d").strftime("%d/%m/%Y")
         except ValueError:
-            pass
+            birth_date = UNKNOWN
 
-    # height (m → cm int)
-    height: Optional[int] = None
+    # height: "Unknown" if API returns null, int otherwise
+    height: Any = UNKNOWN
     raw_h = attrs.get("height")
     if raw_h is not None:
         try:
@@ -347,18 +422,14 @@ def fetch_player_from_api(player_id: str) -> Optional[dict]:
         except (ValueError, TypeError):
             pass
 
-    # preferred_foot
-    foot_obj = attrs.get("preferredFoot") or {}
-    preferred_foot = foot_obj.get("name", "")
-    if not preferred_foot:
-        preferred_foot = FOOT_MAP.get(attrs.get("preferredFootId"), "")
+    # preferred_foot: use ID (language-independent), "Unknown" if 0/null
+    foot_id = attrs.get("preferredFootId")
+    preferred_foot = FOOT_MAP.get(foot_id, UNKNOWN) if foot_id else UNKNOWN
 
-    # position / main_position
     position = _normalize_position_group(attrs.get("positionGroup", ""))
     pos_obj = attrs.get("position") or {}
     main_position = pos_obj.get("name", "")
 
-    # other_positions
     other_positions: List[str] = []
     for key in ("firstSidePosition", "secondSidePosition"):
         sp = attrs.get(key) or {}
@@ -366,15 +437,12 @@ def fetch_player_from_api(player_id: str) -> Optional[dict]:
         if sp_name and sp_name != main_position:
             other_positions.append(sp_name)
 
-    # img_url (portraitUrl may or may not exist)
     img_url = d.get("portraitUrl", "")
-
-    # profile_url
     rel = d.get("relativeUrl", "")
     profile_url = f"https://www.transfermarkt.com{rel}" if rel else ""
 
     return {
-        "player_id": str(d.get("id", player_id)),
+        "player_id": str(d.get("id", "")),
         "name": d.get("name", ""),
         "position": position,
         "main_position": main_position,
@@ -385,6 +453,56 @@ def fetch_player_from_api(player_id: str) -> Optional[dict]:
         "img_url": img_url,
         "profile_url": profile_url,
     }
+
+
+def fetch_players_batch(
+    player_ids: List[str],
+    pbar: Optional[tqdm] = None,
+) -> Dict[str, dict]:
+    """Fetch players from the batch API with adaptive splitting on errors.
+
+    Returns ``{player_id: normalised_dict}`` for all successfully fetched
+    players.  Splits the batch in half on 414 / 429 / 5xx responses (same
+    strategy as ``fill_club_names.fetch_club_names``).
+    """
+    cache: Dict[str, dict] = {}
+
+    def _fetch(batch: List[str]) -> None:
+        if not batch:
+            return
+
+        params = "&".join(f"ids[]={pid}" for pid in batch)
+        url = f"{TM_API_URL}/players?{params}"
+        data = _api_get(url)
+
+        if data is None:
+            if pbar:
+                pbar.update(len(batch))
+            return
+
+        error_status = data.get("_status")
+        if error_status is not None:
+            if len(batch) <= 1:
+                if pbar:
+                    pbar.update(len(batch))
+                return
+            mid = len(batch) // 2
+            tqdm.write(f"    HTTP {error_status} with {len(batch)} IDs → splitting")
+            _fetch(batch[:mid])
+            _fetch(batch[mid:])
+            return
+
+        if data.get("success"):
+            for player_obj in data.get("data", []):
+                parsed = _parse_player_data(player_obj)
+                pid = parsed.get("player_id")
+                if pid:
+                    cache[pid] = parsed
+        if pbar:
+            pbar.update(len(batch))
+
+    _fetch(player_ids)
+    return cache
 
 
 # ── Find players needing API ─────────────────────────────────────────────────
@@ -412,23 +530,10 @@ def find_players_needing_api(master: Dict[str, dict]) -> Set[str]:
     return needs
 
 
-def fetch_and_update_master(
-    player_ids: Set[str],
-    master: Dict[str, dict],
-) -> int:
-    """Fetch from API and update master in-place.  Returns # updated."""
-    ids = sorted(player_ids)
-    print(f"\nFetching data for {len(ids)} players from API …")
+def _update_master_from_api(api_data: Dict[str, dict], master: Dict[str, dict]) -> int:
+    """Merge API results into master.  Returns count of players updated."""
     updated = 0
-
-    for i, pid in enumerate(ids, 1):
-        if i % 100 == 0 or i == len(ids):
-            print(f"  Progress: {i}/{len(ids)}  (updated so far: {updated})")
-
-        api = fetch_player_from_api(pid)
-        if not api:
-            continue
-
+    for pid, api in api_data.items():
         best = master.setdefault(pid, {"player_id": pid})
         changed = False
 
@@ -467,8 +572,25 @@ def fetch_and_update_master(
 
         if changed:
             updated += 1
+    return updated
 
-    print(f"  Updated {updated} players from API.\n")
+
+def fetch_and_update_master(
+    player_ids: Set[str],
+    master: Dict[str, dict],
+) -> int:
+    """Fetch from batch API and update master in-place.  Returns # updated."""
+    ids = sorted(player_ids)
+    batches = [ids[i:i + BATCH_SIZE] for i in range(0, len(ids), BATCH_SIZE)]
+    all_api_data: Dict[str, dict] = {}
+
+    with tqdm(total=len(ids), desc="Fetching from API", unit="player") as pbar:
+        for batch in batches:
+            batch_result = fetch_players_batch(batch, pbar=pbar)
+            all_api_data.update(batch_result)
+
+    updated = _update_master_from_api(all_api_data, master)
+    print(f"  Fetched {len(all_api_data)} players, updated {updated} in master.")
     return updated
 
 
@@ -482,7 +604,7 @@ def build_age_lookup(
     cutoffs = {s: c for s in seasons if (c := _season_cutoff(s)) is not None}
     ages: Dict[str, Dict[str, int]] = {}
 
-    for pid, best in master.items():
+    for pid, best in tqdm(master.items(), desc="Building age lookup", unit="player"):
         bd = best.get("birth_date")
         if not bd:
             continue
@@ -504,7 +626,7 @@ def apply_ages(
     """Overwrite age in every record.  Returns modified base names."""
     modified: Set[str] = set()
 
-    for base, season, records in file_records:
+    for base, season, records in tqdm(file_records, desc="Applying ages", unit="file"):
         changed = False
         for rec in records:
             pid = rec.get("player_id")
@@ -530,11 +652,9 @@ def write_files(file_records: List[FileRecord], bases_to_write: Set[str]) -> Non
         print("\nNo files to write.")
         return
 
-    for base, _season, records in file_records:
-        if base not in bases_to_write:
-            continue
+    to_write = [(b, s, r) for b, s, r in file_records if b in bases_to_write]
+    for base, _season, records in tqdm(to_write, desc="Writing files", unit="file"):
         save_json_with_parts(records, base)
-        print(f"  Written: {base}")
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────

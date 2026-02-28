@@ -87,14 +87,14 @@ class PlayerFeatures:
     age: float
     position: str  # GK, DEF, MID, ATT
     player_nationality: str  # Player's nationality
-    player_nationality_bin: str  # Binned nationality (top nationalities or "Other")
+    player_nationality_bin: str  # Binned nationality (top nationalities, "Other", or "None")
     is_in_top_league: bool  # Is player in one of top 5 leagues
     is_in_home_league: bool  # Is player playing in their home country
-    current_league: str  # League key from LEAGUE_INFO or "Other"
-    league_tier: str  # Tier from LEAGUE_INFO (1, 2, 3, 4, youth, cup) or "Other"
+    current_league: str  # League key from LEAGUE_INFO, "Other", or "None"
+    league_tier: str  # Tier from LEAGUE_INFO (1, 2, 3, 4, youth, cup), "Other", or "None"
     current_club: str  # Club name at valuation time
     current_club_value: float  # Sum of market values of all players in team at cutoff (€)
-    current_club_bin: str  # Binned club (top 25 clubs or "Other")
+    current_club_bin: str  # Binned club (top 25 clubs, "Other", or "None")
     valuation_date: datetime  # Date of valuation (important for market inflation)
     
     # Historical value features
@@ -337,7 +337,7 @@ class PlayerFeatures:
             "pct_percentile_3y": sf(self.pct_percentile_3y),
             "pct_percentile_4y": sf(self.pct_percentile_4y),
             "pct_percentile_5y": sf(self.pct_percentile_5y),
-            "height": float(self.height) if self.height else float("nan"),
+            "height": float("nan") if (not self.height or self.height == "Unknown") else float(self.height),
             "preferred_foot": self.preferred_foot,  # Categorical
             "num_positions": float(self.num_positions),
             "value_volatility": float(self.value_volatility),
@@ -350,6 +350,8 @@ class PlayerFeatures:
 
 def _compute_age(birth_date_str: str, reference_date: datetime) -> Optional[float]:
     """Compute age as a float (e.g. 23.5) from a DD/MM/YYYY birth date string."""
+    if not birth_date_str or birth_date_str == "Unknown":
+        return None
     bd = parse_date(birth_date_str)
     if bd is None:
         return None
@@ -425,9 +427,9 @@ def _is_home_league(nationality: str, country: str) -> bool:
 
 
 def _bin_nationality(nationality: str) -> str:
-    """Bin nationality to top categories or 'Other'."""
+    """Bin nationality to top categories, 'Other', or 'None'."""
     if not nationality:
-        return "Other"
+        return "None"
     if nationality in TOP_NATIONALITIES:
         return nationality
     return "Other"
@@ -478,11 +480,14 @@ def compute_fair_prices(
 _PERCENTILE_HORIZONS = ["1y", "2y", "3y", "4y", "5y"]
 
 
-def _load_float(x: Optional[float], default: float = float("nan")) -> float:
-    """Load float from JSON; None -> NaN (XGBoost handles missing natively)."""
-    if x is None:
+def _load_float(x, default: float = float("nan")) -> float:
+    """Load float from JSON; None / 'Unknown' -> NaN (XGBoost handles missing natively)."""
+    if x is None or x == "Unknown":
         return default
-    return float(x)
+    try:
+        return float(x)
+    except (ValueError, TypeError):
+        return default
 
 
 def _percentile_rank(values: List[float], x: float) -> float:
@@ -567,9 +572,9 @@ def _compute_percentile_features(batch: List[PlayerFeatures], verbose: bool = Fa
 
 
 def _get_league_and_tier(league_id: str) -> Tuple[str, str]:
-    """Get league_key and tier from league_id. Returns ('Other', 'Other') if not in LEAGUE_INFO."""
+    """Get league_key and tier from league_id. 'None' if empty, 'Other' if unknown."""
     if not league_id:
-        return "Other", "Other"
+        return "None", "None"
     info = LEAGUE_ID_TO_KEY_AND_TIER.get(league_id)
     if info is None:
         return "Other", "Other"
@@ -577,9 +582,9 @@ def _get_league_and_tier(league_id: str) -> Tuple[str, str]:
 
 
 def _bin_club(club: str) -> str:
-    """Bin club to top categories or 'Other'."""
+    """Bin club to top categories, 'Other', or 'None'."""
     if not club:
-        return "Other"
+        return "None"
     if club in TOP_CLUBS:
         return club
     return "Other"
@@ -1014,9 +1019,15 @@ def extract_player_features(
     months_of_history = int((cutoff_date - first_date).days / 30)
     
     # Extended features (v2)
-    height_val = float(player_info.height) if player_info and player_info.height else float("nan")
+    raw_height = player_info.height if player_info else None
+    height_val = float("nan")
+    if raw_height is not None and raw_height != "Unknown":
+        try:
+            height_val = float(raw_height)
+        except (ValueError, TypeError):
+            pass
     foot = (player_info.preferred_foot or "Unknown") if player_info else "Unknown"
-    if foot not in ("Left", "Right", "Both"):
+    if foot not in ("left", "right", "both", "Unknown"):
         foot = "Unknown"
     num_pos = 1
     if player_info:

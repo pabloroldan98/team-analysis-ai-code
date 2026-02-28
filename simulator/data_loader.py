@@ -353,7 +353,7 @@ def get_active_players_at_season_start(
     cutoff = _get_season_start_date(season)
     age_iter = tqdm(active.values(), desc="Computing ages", disable=not verbose)
     for p in age_iter:
-        if p.birth_date:
+        if p.birth_date and p.birth_date != "Unknown":
             bd = None
             for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
                 try:
@@ -620,7 +620,7 @@ def load_season_cache(season: str, max_age_days: int = 1) -> Optional[dict]:
     # Recalculate ages from birth_date to fix stale/incorrect values in cache
     cutoff = _get_season_start_date(season)
     for p in players:
-        if p.birth_date:
+        if p.birth_date and p.birth_date != "Unknown":
             bd = None
             for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
                 try:

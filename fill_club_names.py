@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import requests
+from tqdm import tqdm
 
 # Ensure project root is on sys.path so helpers can be imported
 _ROOT = Path(__file__).parent
@@ -87,16 +88,15 @@ def load_all_json_files(data_dir: Path) -> List[FileRecord]:
     result: List[FileRecord] = []
     # bases = list_json_bases("*.json")
     bases = list_json_bases("*_all_*.json")
-    print(f"Loading JSON files from {data_dir} …")
 
-    for base in bases:
+    for base in tqdm(bases, desc="Loading JSON files", unit="file"):
         prefix = _file_prefix(base + ".json")
         if prefix is None:
             continue
         try:
             raw = load_json(base)
         except Exception as exc:
-            print(f"  SKIP {base}: {exc}")
+            tqdm.write(f"  SKIP {base}: {exc}")
             continue
         if raw is None:
             continue
@@ -373,9 +373,7 @@ def fetch_club_names(club_ids: Set[str]) -> Dict[str, str]:
     cache: Dict[str, str] = {}
     ids_list = sorted(cid for cid in club_ids if cid)
 
-    print(f"\n{'='*60}")
-    print(f"Fetching names for {len(ids_list)} club IDs via API …")
-    print(f"{'='*60}")
+    pbar = tqdm(total=len(ids_list), desc="Fetching club names", unit="id")
 
     def _fetch_batch(batch: list) -> None:
         if not batch:
@@ -386,17 +384,19 @@ def fetch_club_names(club_ids: Set[str]) -> Dict[str, str]:
         data = _api_get(api_url)
 
         if data is None:
-            print(f"    FAILED to fetch batch of {len(batch)} – skipping")
+            tqdm.write(f"    FAILED to fetch batch of {len(batch)} – skipping")
+            pbar.update(len(batch))
             return
 
         # Splittable error → halve and retry
         error_status = data.get("_status")
         if error_status is not None:
             if len(batch) <= 1:
-                print(f"    Cannot split further, skipping ID: {batch[0]}")
+                tqdm.write(f"    Cannot split further, skipping ID: {batch[0]}")
+                pbar.update(len(batch))
                 return
             mid = len(batch) // 2
-            print(f"    HTTP {error_status} with {len(batch)} IDs → splitting in half")
+            tqdm.write(f"    HTTP {error_status} with {len(batch)} IDs → splitting")
             _fetch_batch(batch[:mid])
             _fetch_batch(batch[mid:])
             return
@@ -408,10 +408,11 @@ def fetch_club_names(club_ids: Set[str]) -> Dict[str, str]:
                 cname = club.get("name", "")
                 if cid:
                     cache[cid] = cname
-            print(f"    ✓ Fetched {len(clubs_data)} names (batch of {len(batch)})")
+        pbar.update(len(batch))
 
     _fetch_batch(ids_list)
-    print(f"    Total names resolved: {len(cache)}")
+    pbar.close()
+    print(f"  Total names resolved: {len(cache)}")
     return cache
 
 
@@ -435,7 +436,7 @@ def scan_missing_ids(
     missing_ids: Set[str] = set()
     files_to_patch: Dict[str, list] = {}
 
-    for filepath, prefix, records in file_records:
+    for filepath, prefix, records in tqdm(file_records, desc="Scanning missing IDs", unit="file"):
         key_pairs = FILE_KEY_MAP.get(prefix, [])
         file_missing = False
 
@@ -490,7 +491,7 @@ def patch_files(
 
     total_filled = 0
 
-    for filepath, key_pairs in sorted(all_paths.items()):
+    for filepath, key_pairs in tqdm(sorted(all_paths.items()), desc="Patching files", unit="file"):
         records = records_by_path.get(filepath)
         if records is None:
             continue
@@ -511,15 +512,6 @@ def patch_files(
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
             total_filled += file_filled
-            if file_filled and filepath in force_write:
-                print(f"  {Path(filepath).name}: filled {file_filled} names "
-                      f"(+ earlier in-place fixes)")
-            elif file_filled:
-                print(f"  {Path(filepath).name}: filled {file_filled} names")
-            else:
-                print(f"  {Path(filepath).name}: saved (modified by earlier fixes)")
-        else:
-            print(f"  {Path(filepath).name}: nothing to fill (IDs not resolved)")
 
     print(f"\nTotal names filled across all files: {total_filled}")
 
