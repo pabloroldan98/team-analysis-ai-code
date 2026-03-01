@@ -164,6 +164,7 @@ class PlayerFeatures:
     peak_ratio: float = 1.0  # current_value / max_value (1 = at peak)
     age_value_ratio: float = 0.0  # current_value / (age²) – captures prime-curve
     log_current_value: float = 0.0  # log₁₀(1 + current_value) – scale-invariant
+    on_loan: bool = False  # player is on loan at cutoff date
 
     # Training metadata
     cutoff_season: str = ""  # Season of the cutoff (e.g., "2022-2023") for filtering
@@ -258,6 +259,7 @@ class PlayerFeatures:
             "peak_ratio": jf(self.peak_ratio),
             "age_value_ratio": jf(self.age_value_ratio),
             "log_current_value": jf(self.log_current_value),
+            "on_loan": self.on_loan,
             "cutoff_season": self.cutoff_season,
             "target_value": self.target_value,
         }
@@ -345,6 +347,7 @@ class PlayerFeatures:
             "peak_ratio": float(self.peak_ratio),
             "age_value_ratio": float(self.age_value_ratio),
             "log_current_value": float(self.log_current_value),
+            "on_loan": 1.0 if self.on_loan else 0.0,
         }
 
 
@@ -1047,6 +1050,10 @@ def extract_player_features(
         age_value_ratio = (current_value / 1_000_000) / (age_sq / 100.0) if age_sq > 0 else 0.0
     log_current_value = float(np.log10(max(current_value, 1.0)))
 
+    is_on_loan = False
+    if player_transfer is not None and player_transfer.is_loan and player_transfer.transfer_type == "loan_out":
+        is_on_loan = True
+
     # Target value (1 year after cutoff, or latest if not available)
     target_value = None
     if include_target and future_vals:
@@ -1104,6 +1111,7 @@ def extract_player_features(
         peak_ratio=peak_ratio,
         age_value_ratio=age_value_ratio,
         log_current_value=log_current_value,
+        on_loan=is_on_loan,
         cutoff_season=cutoff_season,
         target_value=target_value,
     )
@@ -1547,6 +1555,7 @@ def load_training_dataset(cutoff_months: int = 12) -> Optional[List[PlayerFeatur
             peak_ratio=_load_float(item.get("peak_ratio")),
             age_value_ratio=_load_float(item.get("age_value_ratio")),
             log_current_value=_load_float(item.get("log_current_value")),
+            on_loan=bool(item.get("on_loan", False)),
             cutoff_season=item.get("cutoff_season", ""),
             target_value=item.get("target_value"),
         )
@@ -1688,6 +1697,7 @@ def build_prediction_dataset(
         )
         
         if features:
+            features.on_loan = False
             dataset.append(features)
     
     # Compute percentile features per cutoff

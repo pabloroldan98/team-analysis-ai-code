@@ -37,6 +37,7 @@ This will:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 from datetime import datetime
@@ -444,6 +445,42 @@ def train_model(
     return model_path
 
 
+_WEIGHTED_METRICS = [
+    "val_rmse", "val_mae", "val_mape", "val_mdape",
+    "eval_rmse_M", "eval_mae_M", "eval_r2",
+    "eval_mape", "eval_mdape",
+    "eval_within_10pct", "eval_within_25pct", "eval_within_50pct",
+]
+
+
+def _compute_weighted_average(segment_metrics: Dict[str, dict]) -> dict:
+    """Weighted average of numeric metrics across trained segments (by eval_samples)."""
+    trained = {k: v for k, v in segment_metrics.items() if v.get("status") == "trained"}
+    if not trained:
+        return {}
+
+    total_eval = sum(v.get("eval_samples", 0) for v in trained.values())
+    total_train = sum(v.get("num_train_samples", 0) for v in trained.values())
+    total_val = sum(v.get("num_val_samples", 0) for v in trained.values())
+    if total_eval == 0:
+        return {}
+
+    avg: dict = {"total_eval_samples": total_eval, "total_train_samples": total_train, "total_val_samples": total_val}
+    for metric in _WEIGHTED_METRICS:
+        weighted_sum = 0.0
+        count = 0
+        for seg in trained.values():
+            n = seg.get("eval_samples", 0)
+            val = seg.get(metric)
+            if val is not None and n > 0:
+                weighted_sum += val * n
+                count += n
+        if count > 0:
+            avg[metric] = weighted_sum / count
+
+    return avg
+
+
 def train_segmented_models(
     season: str,
     full_dataset: List[PlayerFeatures],
@@ -466,15 +503,21 @@ def train_segmented_models(
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     saved: Dict[str, Path] = {}
+    all_segment_metrics: Dict[str, dict] = {}
 
     for seg_name, lo, hi in SEGMENT_THRESHOLDS:
         seg_data = [f for f in training_data if lo <= f.current_value < hi]
         if len(seg_data) < 50:
             if verbose:
                 print(f"  Segment {seg_name}: only {len(seg_data)} samples — skipping (will use global fallback)")
+            all_segment_metrics[seg_name] = {
+                "segment": seg_name,
+                "status": "skipped",
+                "reason": f"insufficient samples ({len(seg_data)})",
+                "samples": len(seg_data),
+            }
             continue
 
-        # Determine how many seasons this segment spans
         seg_seasons = sorted(set(f.cutoff_season for f in seg_data if f.cutoff_season))
         seg_test_years = min(test_years, max(1, len(seg_seasons) - 1))
 
@@ -486,25 +529,67 @@ def train_segmented_models(
 
         predictor = ValuePredictor()
         try:
-            predictor.train(seg_data, test_years=seg_test_years, verbose=verbose, **xgb_params)
-        except ValueError as e:
+            train_metrics = predictor.train(seg_data, test_years=seg_test_years, verbose=verbose, **xgb_params)
+        except Exception as e:
             if verbose:
-                print(f"  Segment {seg_name} failed: {e} — skipping")
+                import traceback
+                print(f"  Segment {seg_name} failed: {type(e).__name__}: {e}")
+                traceback.print_exc()
+            all_segment_metrics[seg_name] = {
+                "segment": seg_name,
+                "status": "failed",
+                "error": f"{type(e).__name__}: {e}",
+                "samples": len(seg_data),
+                "seasons": len(seg_seasons),
+            }
+            del predictor
+            gc.collect()
             continue
 
         model_path = MODELS_DIR / f"value_model_{season}_{seg_name}.joblib"
         predictor.save(model_path)
         saved[seg_name] = model_path
 
-        metrics_path = model_path.with_suffix(".json")
         eval_data = [f for f in get_samples_for_season(full_dataset, season) if lo <= f.current_value < hi]
-        eval_metrics = _evaluate_predictions(predictor, eval_data, f"{season} [{seg_name}]", verbose)
-        eval_metrics["segment"] = seg_name
-        with open(metrics_path, "w") as f:
-            json.dump(eval_metrics, f, indent=2)
+        if verbose:
+            print(f"\n  Evaluating segment {seg_name}...")
+        eval_metrics = _evaluate_predictions(predictor, eval_data, season, verbose)
+
+        seg_metrics = {**train_metrics, **eval_metrics}
+        seg_metrics["segment"] = seg_name
+        seg_metrics["status"] = "trained"
+        seg_metrics["season"] = season
+        seg_metrics["segment_range"] = f"€{lo/1e6:.0f}M – €{hi/1e6:.0f}M" if hi < float("inf") else f"≥€{lo/1e6:.0f}M"
+        seg_metrics["total_segment_samples"] = len(seg_data)
+
+        all_segment_metrics[seg_name] = seg_metrics
 
         if verbose:
             print(f"  Saved: {model_path}")
+
+        del predictor
+        gc.collect()
+
+    # Weighted average across trained segments (weighted by eval_samples)
+    weighted_avg = _compute_weighted_average(all_segment_metrics)
+
+    combined_path = MODELS_DIR / f"value_model_{season}_segmented.json"
+    combined = {
+        "season": season,
+        "weighted_average": weighted_avg,
+        "segments": all_segment_metrics,
+    }
+    with open(combined_path, "w") as f:
+        json.dump(combined, f, indent=2, default=str)
+    if verbose:
+        print(f"\nCombined segmented metrics saved to: {combined_path}")
+        if weighted_avg:
+            print(f"  Weighted average (by eval samples):")
+            for k, v in weighted_avg.items():
+                if isinstance(v, float):
+                    print(f"    {k}: {v:.4f}")
+                else:
+                    print(f"    {k}: {v}")
 
     return saved
 

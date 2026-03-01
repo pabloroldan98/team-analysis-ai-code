@@ -65,6 +65,7 @@ class ValuePredictor:
         "height", "preferred_foot", "num_positions",
         "value_volatility", "value_acceleration", "peak_ratio",
         "age_value_ratio", "log_current_value",
+        "on_loan",
     ]
     
     CATEGORICAL_FEATURES = [
