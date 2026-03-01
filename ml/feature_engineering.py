@@ -165,6 +165,7 @@ class PlayerFeatures:
     age_value_ratio: float = 0.0  # current_value / (age²) – captures prime-curve
     log_current_value: float = 0.0  # log₁₀(1 + current_value) – scale-invariant
     on_loan: bool = False  # player is on loan at cutoff date
+    fair_price: float = 0.0  # linear extrapolation from last 2 valuations at cutoff
 
     # Training metadata
     cutoff_season: str = ""  # Season of the cutoff (e.g., "2022-2023") for filtering
@@ -260,6 +261,7 @@ class PlayerFeatures:
             "age_value_ratio": jf(self.age_value_ratio),
             "log_current_value": jf(self.log_current_value),
             "on_loan": self.on_loan,
+            "fair_price": jf(self.fair_price),
             "cutoff_season": self.cutoff_season,
             "target_value": self.target_value,
         }
@@ -348,6 +350,7 @@ class PlayerFeatures:
             "age_value_ratio": float(self.age_value_ratio),
             "log_current_value": float(self.log_current_value),
             "on_loan": 1.0 if self.on_loan else 0.0,
+            "fair_price_M": self.fair_price / 1_000_000,
         }
 
 
@@ -447,7 +450,7 @@ def compute_fair_prices(
 ) -> Dict[str, float]:
     """Fair price via linear extrapolation from the last 2 valuations <= cutoff.
 
-    Uses the already-grouped *by_player* dict (player_id → [Valuation]) so
+    Uses the already-grouped *by_player* dict (player_id -> [Valuation]) so
     there is no redundant full-scan of all valuations.
 
     Returns ``{player_id: fair_price}`` clamped to [0, FAIR_PRICE_CAP].
@@ -1201,6 +1204,7 @@ def _process_cutoff_batch(
     """Process one cutoff: extract features for all players, compute percentiles."""
     cutoff_season = _get_season_for_cutoff(cutoff_date)
     team_total_values = _get_team_total_values_at_cutoff(by_player, transfer_map, cutoff_date)
+    fair_prices = compute_fair_prices(by_player, cutoff_date)
     batch: List[PlayerFeatures] = []
     for player_id, player_vals in by_player.items():
         if len(player_vals) < min_valuations:
@@ -1218,6 +1222,7 @@ def _process_cutoff_batch(
             team_total_values=team_total_values,
         )
         if features and features.target_value is not None:
+            features.fair_price = fair_prices.get(player_id, 0.0)
             batch.append(features)
     if batch:
         _compute_percentile_features(batch, verbose=False)
@@ -1556,6 +1561,7 @@ def load_training_dataset(cutoff_months: int = 12) -> Optional[List[PlayerFeatur
             age_value_ratio=_load_float(item.get("age_value_ratio")),
             log_current_value=_load_float(item.get("log_current_value")),
             on_loan=bool(item.get("on_loan", False)),
+            fair_price=_load_float(item.get("fair_price"), default=0.0),
             cutoff_season=item.get("cutoff_season", ""),
             target_value=item.get("target_value"),
         )
@@ -1672,6 +1678,8 @@ def build_prediction_dataset(
             by_player, transfer_map, cutoff_date, verbose=verbose
         )
 
+    fair_prices = compute_fair_prices(by_player, cutoff_date)
+
     # When players dict is provided, only process those player_ids (reduces work when filtered)
     if players:
         items = [(pid, vals) for pid, vals in by_player.items() if pid in players]
@@ -1698,6 +1706,7 @@ def build_prediction_dataset(
         
         if features:
             features.on_loan = False
+            features.fair_price = fair_prices.get(player_id, 0.0)
             dataset.append(features)
     
     # Compute percentile features per cutoff

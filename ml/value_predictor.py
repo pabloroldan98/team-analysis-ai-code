@@ -66,6 +66,7 @@ class ValuePredictor:
         "value_volatility", "value_acceleration", "peak_ratio",
         "age_value_ratio", "log_current_value",
         "on_loan",
+        "fair_price_M",
     ]
     
     CATEGORICAL_FEATURES = [
