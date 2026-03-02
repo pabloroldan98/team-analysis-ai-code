@@ -575,8 +575,8 @@ def _get_horizon_pv(sim, season: str, horizon: int) -> Tuple[Dict[str, float], D
 
     For horizon=1: predicted_value comes from precomputed player data;
                    fair_price comes from precomputed player data.
-    For horizon>1: predicted_value is chained ML predictions;
-                   fair_price is linear extrapolation to the horizon cutoff.
+    For horizon>1: first tries to read from precomputed cache; otherwise
+                   falls back to chained ML predictions at runtime.
 
     Caches results so repeated xGrowth requests with the same season+horizon
     don't recompute.
@@ -598,6 +598,21 @@ def _get_horizon_pv(sim, season: str, horizon: int) -> Tuple[Dict[str, float], D
     )
     from datetime import datetime
     import numpy as _np
+
+    # Try precomputed horizon data from season cache (horizon >= 2)
+    if horizon >= 2:
+        from simulator.data_loader import load_season_cache
+        cached = load_season_cache(season, max_age_days=30)
+        if cached and "horizon_predictions" in cached:
+            hz_key = str(horizon)
+            hz_data = cached["horizon_predictions"].get(hz_key)
+            if hz_data:
+                pv_map = {k: float(v) for k, v in hz_data.get("predicted_values", {}).items()}
+                fp_map = {k: float(v) for k, v in hz_data.get("fair_prices", {}).items()}
+                if pv_map:
+                    result = (pv_map, fp_map)
+                    _xgrowth_horizon_cache[cache_key] = result
+                    return result
 
     # Horizon 1: just return existing values
     if horizon <= 1:
@@ -622,7 +637,31 @@ def _get_horizon_pv(sim, season: str, horizon: int) -> Tuple[Dict[str, float], D
 
     predictor = sim.predictor
     if not predictor:
-        sim._load_predictor()
+        try:
+            sim._load_predictor()
+        except FileNotFoundError:
+            from ml.value_predictor import ValuePredictor, SegmentedValuePredictor
+            loaded = False
+            if season.lower() != "today":
+                start_yr = int(season.split("-")[0])
+                for offset in range(6):
+                    s = f"{start_yr - offset}-{start_yr - offset + 1}"
+                    try:
+                        seg = SegmentedValuePredictor(s)
+                        if seg.is_trained:
+                            sim.predictor = seg
+                            loaded = True
+                            break
+                    except Exception:
+                        continue
+            if not loaded:
+                fb = ValuePredictor.find_model_with_fallback(season) if season.lower() != "today" else ValuePredictor.get_latest_model()
+                if fb and fb.exists():
+                    sim.predictor = ValuePredictor(model_path=fb)
+                else:
+                    result = ({}, {})
+                    _xgrowth_horizon_cache[cache_key] = result
+                    return result
         predictor = sim.predictor
 
     all_valuations = sim._load_all_valuations(verbose=False)
@@ -655,9 +694,10 @@ def _get_horizon_pv(sim, season: str, horizon: int) -> Tuple[Dict[str, float], D
         clamped = clamp_prediction(pred, mv)
         feat_by_id[feat.player_id] = (feat, clamped)
 
-    # Chain for years 2..horizon
+    # Chain incrementally for years 2..horizon, caching intermediate horizons
     current_features = feat_by_id
     for year_offset in range(1, horizon):
+        hz = year_offset + 1
         next_features_list = []
         player_ids_order = []
         july_year = cutoff_date.year + year_offset
@@ -714,14 +754,15 @@ def _get_horizon_pv(sim, season: str, horizon: int) -> Tuple[Dict[str, float], D
             new_current[pid] = (nf, clamped)
         current_features = new_current
 
-    pv_map = {pid: pred for pid, (_, pred) in current_features.items()}
+        # Cache intermediate horizon so horizon=2 is reusable when computing horizon=3
+        hz_cache_key = f"{season}|{hz}"
+        if hz_cache_key not in _xgrowth_horizon_cache:
+            hz_pv = {pid: pred for pid, (_, pred) in current_features.items()}
+            hz_cutoff = datetime(cutoff_date.year + hz - 1, cutoff_date.month, cutoff_date.day)
+            hz_fp = compute_fair_prices(by_player, hz_cutoff)
+            _xgrowth_horizon_cache[hz_cache_key] = (hz_pv, hz_fp)
 
-    # Fair prices: extrapolate to the horizon's final cutoff
-    horizon_cutoff = datetime(cutoff_date.year + horizon - 1, cutoff_date.month, cutoff_date.day)
-    fp_map = compute_fair_prices(by_player, horizon_cutoff)
-
-    result = (pv_map, fp_map)
-    _xgrowth_horizon_cache[cache_key] = result
+    result = _xgrowth_horizon_cache[cache_key]
     return result
 
 

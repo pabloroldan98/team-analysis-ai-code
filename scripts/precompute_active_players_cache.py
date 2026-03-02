@@ -239,6 +239,97 @@ def precompute_and_save(
     if verbose:
         print(f"  → Fair prices for {len(fair_price_map)} / {len(players)} players")
 
+    # ── 4c. Multi-horizon predictions (2y, 3y) — incremental ──────────
+    from copy import copy
+    from ml.value_predictor import clamp_prediction
+    from ml.feature_engineering import _compute_trend, _compute_pct, _compute_diff
+    import numpy as np_util
+
+    if season.lower() == "today":
+        pred_cutoff = cutoff_date
+    else:
+        start_yr = int(season.split("-")[0])
+        pred_cutoff = datetime(start_yr + 1, 7, 1)
+
+    feat_map = {f.player_id: f for f in features}
+    horizon_data: Dict[int, Dict[str, float]] = {}
+
+    current = {
+        pid: (feat_map[pid], clamp_prediction(pred_map[pid], feat_map[pid].current_value))
+        for pid in pred_map if pid in feat_map
+    }
+
+    max_horizon = 3
+    for year_offset in range(1, max_horizon):
+        hz = year_offset + 1
+        if verbose:
+            print(f"\n[4c] Computing horizon {hz}y predictions (year {year_offset}→{year_offset+1})...")
+
+        next_feats = []
+        pids_order = []
+        july_year = pred_cutoff.year + year_offset
+        new_last_val_num = july_year + (7 - 1) / 12.0
+
+        for pid, (feat, prev_pred) in current.items():
+            nf = copy(feat)
+            old_cv = nf.current_value
+
+            nf.current_value = prev_pred
+            nf.last_valuation_date_num = new_last_val_num
+            nf.age = nf.age + 1.0
+
+            nf.value_5y_ago = nf.value_4y_ago
+            nf.value_4y_ago = nf.value_3y_ago
+            nf.value_3y_ago = nf.value_2y_ago
+            nf.value_2y_ago = nf.value_1y_ago
+            nf.value_1y_ago = old_cv
+
+            nf.trend_1y = _compute_trend(nf.current_value, nf.value_1y_ago)
+            nf.trend_2y = _compute_trend(nf.current_value, nf.value_2y_ago)
+            nf.trend_4y = _compute_trend(nf.current_value, nf.value_4y_ago)
+            nf.trend_5y = _compute_trend(nf.current_value, nf.value_5y_ago)
+
+            nf.pct_1y = _compute_pct(nf.current_value, nf.value_1y_ago)
+            nf.pct_2y = _compute_pct(nf.current_value, nf.value_2y_ago)
+            nf.pct_4y = _compute_pct(nf.current_value, nf.value_4y_ago)
+            nf.pct_5y = _compute_pct(nf.current_value, nf.value_5y_ago)
+
+            nf.diff_1y = _compute_diff(nf.current_value, nf.value_1y_ago)
+            nf.diff_2y = _compute_diff(nf.current_value, nf.value_2y_ago)
+            nf.diff_4y = _compute_diff(nf.current_value, nf.value_4y_ago)
+            nf.diff_5y = _compute_diff(nf.current_value, nf.value_5y_ago)
+
+            nf.value_acceleration = nf.trend_1y - nf.trend_2y
+            nf.max_value = max(nf.max_value, nf.current_value)
+            nf.peak_ratio = nf.current_value / max(nf.max_value, 1.0)
+            nf.log_current_value = float(np_util.log10(max(nf.current_value, 1.0)))
+            if np_util.isnan(nf.age):
+                nf.age_value_ratio = float("nan")
+            else:
+                age_sq = max(nf.age, 1.0) ** 2
+                nf.age_value_ratio = (nf.current_value / 1_000_000) / (age_sq / 100.0) if age_sq > 0 else 0.0
+            nf.num_valuations += 1
+            nf.months_of_history += 12
+
+            next_feats.append(nf)
+            pids_order.append(pid)
+
+        preds = predictor.predict_batch(next_feats)
+        new_current = {}
+        for pid, nf, pred in zip(pids_order, next_feats, preds):
+            clamped = clamp_prediction(pred, nf.current_value)
+            new_current[pid] = (nf, clamped)
+        current = new_current
+
+        hz_pv = {pid: round(pred, 2) for pid, (_, pred) in current.items()}
+        hz_cutoff = datetime(pred_cutoff.year + hz - 1, pred_cutoff.month, pred_cutoff.day)
+        hz_fp = compute_fair_prices(by_player, hz_cutoff)
+        hz_fp = {pid: round(v, 2) for pid, v in hz_fp.items()}
+
+        horizon_data[hz] = {"predicted_values": hz_pv, "fair_prices": hz_fp}
+        if verbose:
+            print(f"  → Horizon {hz}y: {len(hz_pv)} predictions, {len(hz_fp)} fair prices")
+
     # ── 5. Save ──────────────────────────────────────────────────────────
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -262,6 +353,9 @@ def precompute_and_save(
         "players": [p.to_dict() for p in players],
         "team_market_values": team_market_values,
         "athletic_eligible_ids": sorted(athletic_eligible_ids),
+        "horizon_predictions": {
+            str(hz): data for hz, data in horizon_data.items()
+        },
     }
 
     if verbose:

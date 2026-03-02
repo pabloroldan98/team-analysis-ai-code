@@ -637,11 +637,15 @@ def load_season_cache(season: str, max_age_days: int = 1) -> Optional[dict]:
     team_market_values = raw.get("team_market_values", {})
     athletic_ids = set(raw.get("athletic_eligible_ids", []))
 
-    return {
+    result = {
         "players": players,
         "team_market_values": team_market_values,
         "athletic_eligible_ids": athletic_ids,
     }
+    horizon_preds = raw.get("horizon_predictions")
+    if horizon_preds and isinstance(horizon_preds, dict):
+        result["horizon_predictions"] = horizon_preds
+    return result
 
 
 def get_active_players_with_predictions(
