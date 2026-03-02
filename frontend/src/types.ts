@@ -58,6 +58,7 @@ export interface SellRecommendation {
   decline: number;
   decline_pct: number;
   img_url: string;
+  on_loan?: boolean;
 }
 
 export interface SellRecommendations {
@@ -65,7 +66,7 @@ export interface SellRecommendations {
 }
 
 export type BuyMode = "exact" | "range" | "total";
-export type Approach = "max_value" | "young_talents" | "balanced";
+export type Approach = "max_value" | "young_talents" | "veteran_players" | "balanced";
 export type Objective = "smv" | "net_benefit" | "roi" | "growth_pct";
 export type SimSpeed = "local" | "fast" | "standard";
 
@@ -93,6 +94,9 @@ export interface XGrowthPlayer {
   position: string;
   age: number | null;
   team: string;
+  league: string;
+  nationality: string;
+  other_nationalities: string[];
   market_value: number;
   predicted_value: number;
   xgrowth: number;
@@ -101,6 +105,7 @@ export interface XGrowthPlayer {
   roi: number;
   growth_pct: number;
   img_url: string;
+  is_available: boolean;
 }
 
 export interface SimilarPlayer extends XGrowthPlayer {

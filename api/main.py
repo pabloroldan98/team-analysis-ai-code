@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json as _json
 import os
+import pickle
+import unicodedata
 import queue
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +31,11 @@ load_dotenv(ROOT_DIR / ".env")
 
 from scraping.utils.helpers import list_json_bases, load_json
 from webapp.i18n import format_currency
+
+
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
+
 
 TODAY_SEASON = "today"
 
@@ -122,6 +130,7 @@ class SellRecommendation(BaseModel):
     decline: float
     decline_pct: float
     img_url: str = ""
+    on_loan: bool = False
 
 class SellRecommendationsOut(BaseModel):
     peak_players: List[SellRecommendation]
@@ -132,6 +141,9 @@ class XGrowthPlayer(BaseModel):
     position: str
     age: Optional[int]
     team: str
+    league: str = ""
+    nationality: str = ""
+    other_nationalities: List[str] = []
     market_value: float
     predicted_value: float
     xgrowth: float
@@ -140,6 +152,7 @@ class XGrowthPlayer(BaseModel):
     roi: float = 0
     growth_pct: float = 0
     img_url: str = ""
+    is_available: bool = True
 
 class SimilarPlayerOut(BaseModel):
     player_id: str
@@ -191,6 +204,7 @@ class SearchResults(BaseModel):
 class AISummaryRequest(BaseModel):
     api_key: str = ""
     language: str = "es"
+    result_data: Optional[dict] = None
 
 # ---------------------------------------------------------------------------
 # App
@@ -213,6 +227,32 @@ ASSETS_DIR = ROOT_DIR / "assets"
 # In-memory cache for preloaded simulators
 _sim_cache: Dict[str, Any] = {}
 _last_result: Optional[Any] = None
+_RESULT_CACHE_PATH = Path(tempfile.gettempdir()) / "team_analysis_last_result.pkl"
+
+
+def _save_last_result(result: Any) -> None:
+    """Persist result to disk so it survives server restarts."""
+    global _last_result
+    _last_result = result
+    try:
+        with open(_RESULT_CACHE_PATH, "wb") as f:
+            pickle.dump(result, f)
+    except Exception as exc:
+        print(f"Warning: could not pickle last result: {exc}")
+
+
+def _get_last_result() -> Optional[Any]:
+    """Return in-memory result, or reload from disk if server was restarted."""
+    global _last_result
+    if _last_result is not None:
+        return _last_result
+    try:
+        if _RESULT_CACHE_PATH.exists():
+            with open(_RESULT_CACHE_PATH, "rb") as f:
+                _last_result = pickle.load(f)
+    except Exception as exc:
+        print(f"Warning: could not unpickle last result: {exc}")
+    return _last_result
 # Cache horizon-extrapolated predicted values: key = "season|horizon"
 _xgrowth_horizon_cache: Dict[str, Dict[str, float]] = {}
 
@@ -380,7 +420,7 @@ def sell_recommendations(club_name: str, season: str) -> SellRecommendationsOut:
     for p in squad:
         mv = p.market_value or 0
         pv = getattr(p, "predicted_value", None)
-        if pv is None or mv <= 0 or p.on_loan:
+        if pv is None or mv <= 0:
             continue
         delta = mv - pv
         peak.append(SellRecommendation(
@@ -394,6 +434,7 @@ def sell_recommendations(club_name: str, season: str) -> SellRecommendationsOut:
             decline=delta,
             decline_pct=delta / mv if mv else 0,
             img_url=p.img_url or "",
+            on_loan=bool(p.on_loan),
         ))
     peak.sort(key=lambda r: r.decline, reverse=True)
     return SellRecommendationsOut(peak_players=peak)
@@ -436,7 +477,8 @@ def get_analytics(club_name: str, season: str) -> AnalyticsOut:
         raise HTTPException(status_code=400, detail="Load squad first")
 
     all_players = sim.all_players
-    signings = _last_result.recommended_signings if _last_result else []
+    _lr = _get_last_result()
+    signings = _lr.recommended_signings if _lr else []
     signing_ids = {p.player_id for p in signings}
     club_ids = {p.player_id for p in sim.club_players}
 
@@ -728,20 +770,22 @@ def get_xgrowth(
     if sim is None:
         raise HTTPException(status_code=400, detail="Load squad first")
 
-    # Club availability filter
+    # Club availability set (always computed for is_available flag, never used to filter)
     available_set: Optional[set] = None
-    if club_name:
-        target_key = f"{club_name}|{season}" if season else None
-        target_sim = _sim_cache.get(target_key) if target_key else None
-        if target_sim is None:
-            target_sim = sim
+    for _ck, _sv in _sim_cache.items():
+        if season and season in _ck:
+            _target_sim = _sv
+            break
+    else:
+        _target_sim = sim
+    if hasattr(_target_sim, "_get_available_players"):
         available_set = {
             p.player_id
-            for p in target_sim._get_available_players(
-                target_sim.all_players,
-                target_sim.club_players,
-                is_athletic=getattr(target_sim, "_is_athletic", False),
-                athletic_eligible_ids=getattr(target_sim, "_athletic_eligible_ids", None),
+            for p in _target_sim._get_available_players(
+                _target_sim.all_players,
+                _target_sim.club_players,
+                is_athletic=getattr(_target_sim, "_is_athletic", False),
+                athletic_eligible_ids=getattr(_target_sim, "_athletic_eligible_ids", None),
             )
         }
 
@@ -763,11 +807,9 @@ def get_xgrowth(
         )
         excluded_clubs = {name.lower() for name, _ in sorted_teams[:exclude_top_n]}
 
-    # Team league mapping for league filtering
-    team_league_map = None
-    if league_set:
-        from ml.feature_engineering import load_team_league_mapping
-        team_league_map = load_team_league_mapping()
+    # Team league mapping (always loaded – used for league field in response)
+    from ml.feature_engineering import load_team_league_mapping
+    team_league_map = load_team_league_mapping()
 
     # Horizon-extrapolated predicted values and fair prices
     horizon_pv, horizon_fp = _get_horizon_pv(sim, season, horizon)
@@ -782,8 +824,6 @@ def get_xgrowth(
         if (p.market_value or 0) <= 0 or p.on_loan:
             continue
         if p.player_id in club_ids:
-            continue
-        if available_set is not None and p.player_id not in available_set:
             continue
 
         mv = p.market_value or 0
@@ -805,23 +845,6 @@ def get_xgrowth(
 
         if excluded_clubs and (p.team or "").lower() in excluded_clubs:
             continue
-
-        if league_set and team_league_map:
-            player_league = (
-                team_league_map
-                .get((p.team_id or "").strip(), {})
-                .get(sim.season, {})
-                .get("league_id", "")
-            )
-            if player_league not in league_set:
-                continue
-
-        if nat_set:
-            matched = (p.nationality or "") in nat_set
-            if not matched and include_second_nationality:
-                matched = any(n in nat_set for n in (p.other_nationalities or []))
-            if not matched:
-                continue
 
         pool.append(p)
 
@@ -916,6 +939,16 @@ def get_xgrowth(
 
     total = len(filtered)
     subset = filtered[:limit] if limit > 0 else filtered
+    def _player_league(p) -> str:
+        if team_league_map:
+            return (
+                team_league_map
+                .get((p.team_id or "").strip(), {})
+                .get(sim.season, {})
+                .get("league_id", "")
+            )
+        return ""
+
     results = []
     for p in subset:
         mv = p.market_value or 1
@@ -926,6 +959,9 @@ def get_xgrowth(
             position=p.position or "N/A",
             age=p.age,
             team=p.team or "",
+            league=_player_league(p),
+            nationality=p.nationality or "",
+            other_nationalities=list(p.other_nationalities or []),
             market_value=p.market_value or 0,
             predicted_value=round(pv, 0),
             xgrowth=round(xg, 4),
@@ -934,6 +970,7 @@ def get_xgrowth(
             roi=round(roi_v, 4),
             growth_pct=round(gp_v, 4),
             img_url=p.img_url or "",
+            is_available=available_set is None or p.player_id in available_set,
         ))
     return XGrowthResults(players=results, total=total, ranges=ranges)
 
@@ -965,10 +1002,10 @@ def search_players(
     if sim is None:
         raise HTTPException(status_code=400, detail="Load squad first")
 
-    query_lower = q.strip().lower()
+    query_norm = _norm(q.strip())
     results = []
     for p in sim.all_players:
-        if query_lower and query_lower not in (p.name or "").lower():
+        if query_norm and query_norm not in _norm(p.name or ""):
             continue
         if position and (p.position or "") != position:
             continue
@@ -1002,12 +1039,11 @@ def search_players(
         ))
     results.sort(key=lambda x: x.market_value, reverse=True)
     total = len(results)
-    return SearchResults(players=results[:limit], total=total)
+    return SearchResults(players=results[:limit] if limit > 0 else results, total=total)
 
 
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest):
-    global _last_result
     from simulator.transfer_simulator import TransferSimulator
 
     cache_key = f"{req.club_name}|{req.season}"
@@ -1058,7 +1094,7 @@ def simulate(req: SimulateRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    _last_result = result
+    _save_last_result(result)
     return _build_result_dict(result, sim=sim)
 
 
@@ -1110,7 +1146,6 @@ def _build_result_dict(result, sim=None) -> dict:
 @app.post("/api/simulate-stream")
 def simulate_stream(req: SimulateRequest):
     """SSE endpoint: streams progress events, then the final result."""
-    global _last_result
     from simulator.transfer_simulator import TransferSimulator
 
     q: queue.Queue = queue.Queue()
@@ -1162,7 +1197,7 @@ def simulate_stream(req: SimulateRequest):
                 min_market_value=req.min_market_value,
                 horizon=req.horizon,
             )
-            _last_result = result
+            _save_last_result(result)
             q.put({"type": "result", "data": _build_result_dict(result, sim=sim)})
         except Exception as exc:
             q.put({"type": "error", "detail": str(exc)})
@@ -1183,9 +1218,9 @@ def simulate_stream(req: SimulateRequest):
 
 @app.post("/api/ai-summary")
 def ai_summary(req: AISummaryRequest) -> Dict[str, str]:
-    if _last_result is None:
-        raise HTTPException(status_code=400, detail="No simulation result available")
+    from simulator.llm_summarizer import _build_detailed_prompt, _build_prompt_from_result, _call_openai, _call_anthropic, _call_gemini
 
+    # --- resolve API key / provider ---
     k = (req.api_key or "").strip()
     if k:
         if k.startswith("sk-ant-"):
@@ -1203,20 +1238,92 @@ def ai_summary(req: AISummaryRequest) -> Dict[str, str]:
         }
         k = env_keys.get(provider, "") or ""
         if not k:
-            raise HTTPException(status_code=400, detail="No API key provided and none configured in .env")
+            for fallback_prov in ("openai", "anthropic", "gemini"):
+                fk = env_keys.get(fallback_prov, "")
+                if fk:
+                    provider, k = fallback_prov, fk
+                    break
+        if not k:
+            raise HTTPException(
+                status_code=400,
+                detail="No API key provided. Enter a key or configure OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY in .env",
+            )
 
-    try:
-        summary = _last_result.generate_llm_summary(
-            provider=provider,
-            api_key=k,
+    def _call_llm(prompt: str) -> str:
+        """Call the resolved LLM provider. Raises on any error."""
+        if provider == "anthropic":
+            summary = _call_anthropic(prompt, api_key=k, raise_on_error=True)
+        elif provider == "gemini":
+            summary = _call_gemini(prompt, api_key=k, raise_on_error=True)
+        else:
+            summary = _call_openai(prompt, api_key=k, raise_on_error=True)
+        if not summary:
+            raise RuntimeError("LLM returned an empty response")
+        return summary
+
+    # --- build prompt from result_data (frontend) or cached result (server) ---
+    prompt: Optional[str] = None
+    rd = req.result_data
+
+    if rd is not None:
+        sold_info = []
+        for sp in rd.get("players_sold", []):
+            mv = (sp.get("market_value") or 0) / 1e6
+            name = sp.get("name", "?")
+            pos = sp.get("position", "?")
+            dest = sp.get("destination_team", "?")
+            if sp.get("was_sold", True):
+                sold_info.append(f"  - {name} ({pos}): €{mv:.1f}M -> {dest}")
+            else:
+                sold_info.append(f"  - {name} ({pos}): €{mv:.1f}M (no buyer found)")
+
+        bought_info = []
+        for p in rd.get("recommended_signings", []):
+            mv = (p.get("market_value") or 0) / 1e6
+            pv = (p.get("predicted_value") or 0) / 1e6
+            team = p.get("team", "?")
+            bought_info.append(f"  - {p.get('name','?')} ({p.get('position','?')}, from {team}): €{mv:.1f}M -> €{pv:.1f}M predicted")
+
+        sold_total = sum((s.get("market_value") or 0) for s in rd.get("players_sold", [])) / 1e6
+        bought_total = sum((p.get("market_value") or 0) for p in rd.get("recommended_signings", [])) / 1e6
+        bought_pred = sum((p.get("predicted_value") or 0) for p in rd.get("recommended_signings", [])) / 1e6
+        total_budget = rd.get("total_budget", 0)
+
+        prompt = _build_detailed_prompt(
+            club_name=rd.get("club_name", "Unknown"),
+            season=rd.get("season", "?"),
+            initial_budget=rd.get("initial_budget", 0),
+            sales_revenue=rd.get("sales_revenue", 0),
+            total_budget=total_budget,
+            sold_info=sold_info,
+            bought_info=bought_info,
+            rest_squad_info=[],
+            sold_total_value=sold_total,
+            sold_total_predicted=0,
+            bought_total_value=bought_total,
+            bought_total_predicted=bought_pred,
+            rest_squad_total_value=0,
+            rest_squad_total_predicted=0,
+            total_cost=bought_total,
+            total_predicted=bought_pred,
+            net_benefit=bought_pred - bought_total,
+            remaining_budget=total_budget - bought_total,
             language=req.language,
         )
+
+    if prompt is None:
+        result = _get_last_result()
+        if result is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No simulation result available. Run a simulation first.",
+            )
+        prompt = _build_prompt_from_result(result, language=req.language)
+
+    try:
+        return {"summary": _call_llm(prompt)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"LLM error ({provider}): {exc}")
-    if not summary:
-        raise HTTPException(status_code=500, detail=f"LLM returned empty response (provider={provider})")
-
-    return {"summary": summary}
 
 
 # Serve compiled frontend (production) or fall back to root assets

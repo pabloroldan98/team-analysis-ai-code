@@ -3,6 +3,45 @@ import type { Lang, League, SearchPlayer, XGrowthPlayer, XGrowthRanges } from ".
 import { t, formatCurrency, POS_ORDER, POS_KEYS } from "../i18n";
 import { api } from "../api";
 
+const NORM_RE = /[\u0300-\u036f]/g;
+function norm(s: string) { return s.normalize("NFD").replace(NORM_RE, "").toLowerCase(); }
+
+/* ── Pagination ────────────────────────────────────────────────────── */
+
+const PAGE_SIZES = [25, 50, 100] as const;
+
+function Pagination({
+  lang, total, page, pageSize, onPage, onPageSize,
+}: {
+  lang: Lang; total: number; page: number; pageSize: number;
+  onPage: (p: number) => void; onPageSize: (s: number) => void;
+}) {
+  const last = Math.max(1, Math.ceil(total / pageSize));
+  return (
+    <div className="flex items-center justify-between flex-wrap gap-2 py-2 text-xs text-gray-500">
+      <div className="flex items-center gap-1">
+        <button disabled={page <= 1} onClick={() => onPage(1)} className="px-1.5 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30">«</button>
+        <button disabled={page <= 1} onClick={() => onPage(page - 1)} className="px-1.5 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30">‹</button>
+        <span className="px-2">{page} {t(lang, "page_of")} {last}</span>
+        <button disabled={page >= last} onClick={() => onPage(page + 1)} className="px-1.5 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30">›</button>
+        <button disabled={page >= last} onClick={() => onPage(last)} className="px-1.5 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30">»</button>
+      </div>
+      <div className="flex items-center gap-1">
+        <select
+          className="border rounded px-1 py-0.5 text-xs"
+          value={pageSize}
+          onChange={(e) => { onPageSize(Number(e.target.value)); onPage(1); }}
+        >
+          {PAGE_SIZES.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <span>{t(lang, "page_per_page")}</span>
+      </div>
+    </div>
+  );
+}
+
 /* ── Slider components ──────────────────────────────────────────────── */
 
 function DualRangeSlider({
@@ -94,10 +133,13 @@ function SearchTab({ lang, season }: Props) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [sPage, setSPage] = useState(1);
+  const [sPageSize, setSPageSize] = useState<number>(50);
 
   const doSearch = useCallback(async () => {
     setLoading(true);
     setSearched(true);
+    setSPage(1);
     try {
       const res = await api.searchPlayers({
         q: query || undefined,
@@ -107,7 +149,7 @@ function SearchTab({ lang, season }: Props) {
         maxValue: maxValue ? Number(maxValue) : undefined,
         minAge: minAge ? Number(minAge) : undefined,
         maxAge: maxAge ? Number(maxAge) : undefined,
-        limit: 50,
+        limit: 0,
       });
       setResults(res.players);
       setTotal(res.total);
@@ -118,6 +160,8 @@ function SearchTab({ lang, season }: Props) {
       setLoading(false);
     }
   }, [query, season, position, minValue, maxValue, minAge, maxAge]);
+
+  const searchDisplay = results.slice((sPage - 1) * sPageSize, sPage * sPageSize);
 
   return (
     <div>
@@ -190,55 +234,58 @@ function SearchTab({ lang, season }: Props) {
       )}
 
       {results.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-gray-500">
-                <th className="py-2 pr-3">#</th>
-                <th className="py-2 pr-3">{t(lang, "xgrowth_col_player")}</th>
-                <th className="py-2 pr-3">{lang === "es" ? "Equipo" : "Team"}</th>
-                <th className="py-2 pr-3">Pos</th>
-                <th className="py-2 pr-3">{lang === "es" ? "Edad" : "Age"}</th>
-                <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_col_value")}</th>
-                <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_col_predicted")}</th>
-                <th className="py-2 pr-3 text-right">xGrowth</th>
-                <th className="py-2 text-right">{t(lang, "fair_price")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.map((p, i) => (
-                <tr key={p.player_id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="py-1.5 pr-3 text-xs text-gray-400">{i + 1}</td>
-                  <td className="py-1.5 pr-3 font-medium">
-                    <div className="flex items-center gap-2">
-                      {p.img_url ? (
-                        <img src={p.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
-                      ) : (
-                        <div className="w-6 h-6 rounded-full bg-gray-200" />
-                      )}
-                      <span>{p.name}</span>
-                    </div>
-                  </td>
-                  <td className="py-1.5 pr-3 text-xs text-gray-500">{p.team}</td>
-                  <td className="py-1.5 pr-3 text-xs">{p.position}</td>
-                  <td className="py-1.5 pr-3 text-xs">{p.age ?? "?"}</td>
-                  <td className="py-1.5 pr-3 text-right text-xs">{formatCurrency(p.market_value)}</td>
-                  <td className="py-1.5 pr-3 text-right text-xs">
-                    {p.predicted_value != null ? formatCurrency(p.predicted_value) : "—"}
-                  </td>
-                  <td className={`py-1.5 pr-3 text-right text-xs font-semibold ${
-                    p.xgrowth != null && p.xgrowth >= 0 ? "text-green-600" : "text-red-600"
-                  }`}>
-                    {p.xgrowth != null ? (Math.abs(p.xgrowth) >= 99 ? "∞" : `${(p.xgrowth >= 0 ? "+" : "")}${(p.xgrowth * 100).toFixed(1)}%`) : "—"}
-                  </td>
-                  <td className="py-1.5 text-right text-xs">
-                    {p.fair_price != null ? formatCurrency(p.fair_price) : "—"}
-                  </td>
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-gray-500">
+                  <th className="py-2 pr-3">#</th>
+                  <th className="py-2 pr-3">{t(lang, "xgrowth_col_player")}</th>
+                  <th className="py-2 pr-3">{lang === "es" ? "Equipo" : "Team"}</th>
+                  <th className="py-2 pr-3">Pos</th>
+                  <th className="py-2 pr-3">{lang === "es" ? "Edad" : "Age"}</th>
+                  <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_col_value")}</th>
+                  <th className="py-2 pr-3 text-right">{t(lang, "xgrowth_col_predicted")}</th>
+                  <th className="py-2 pr-3 text-right">xGrowth</th>
+                  <th className="py-2 text-right">{t(lang, "fair_price")}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {searchDisplay.map((p, i) => (
+                  <tr key={p.player_id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-1.5 pr-3 text-xs text-gray-400">{(sPage - 1) * sPageSize + i + 1}</td>
+                    <td className="py-1.5 pr-3 font-medium">
+                      <div className="flex items-center gap-2">
+                        {p.img_url ? (
+                          <img src={p.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
+                        ) : (
+                          <div className="w-6 h-6 rounded-full bg-gray-200" />
+                        )}
+                        <span>{p.name}</span>
+                      </div>
+                    </td>
+                    <td className="py-1.5 pr-3 text-xs text-gray-500">{p.team}</td>
+                    <td className="py-1.5 pr-3 text-xs">{p.position}</td>
+                    <td className="py-1.5 pr-3 text-xs">{p.age ?? "?"}</td>
+                    <td className="py-1.5 pr-3 text-right text-xs">{formatCurrency(p.market_value)}</td>
+                    <td className="py-1.5 pr-3 text-right text-xs">
+                      {p.predicted_value != null ? formatCurrency(p.predicted_value) : "—"}
+                    </td>
+                    <td className={`py-1.5 pr-3 text-right text-xs font-semibold ${
+                      p.xgrowth != null && p.xgrowth >= 0 ? "text-green-600" : "text-red-600"
+                    }`}>
+                      {p.xgrowth != null ? (Math.abs(p.xgrowth) >= 99 ? "∞" : `${(p.xgrowth >= 0 ? "+" : "")}${(p.xgrowth * 100).toFixed(1)}%`) : "—"}
+                    </td>
+                    <td className="py-1.5 text-right text-xs">
+                      {p.fair_price != null ? formatCurrency(p.fair_price) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pagination lang={lang} total={results.length} page={sPage} pageSize={sPageSize} onPage={setSPage} onPageSize={setSPageSize} />
+        </>
       )}
     </div>
   );
@@ -287,8 +334,8 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
   const [loading, setLoading] = useState(false);
   const rangesInitRef = useRef(false);
 
-  const heavyRef = useRef({ season, onlyAvailable, clubName, horizon, selectedLeagues, selectedNationalities, includeSecondNat, excludeTopN, sortBy });
-  heavyRef.current = { season, onlyAvailable, clubName, horizon, selectedLeagues, selectedNationalities, includeSecondNat, excludeTopN, sortBy };
+  const heavyRef = useRef({ season, clubName, horizon, excludeTopN, sortBy });
+  heavyRef.current = { season, clubName, horizon, excludeTopN, sortBy };
 
   const resetSliders = (r: XGrowthRanges) => {
     setFAge(r.age);
@@ -308,11 +355,7 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
     try {
       const res = await api.getXGrowth({
         season: h.season || undefined,
-        clubName: h.onlyAvailable && h.clubName ? h.clubName : undefined,
         horizon: h.horizon,
-        leagueFilter: h.selectedLeagues.length ? h.selectedLeagues : undefined,
-        nationalityFilter: h.selectedNationalities.length ? h.selectedNationalities : undefined,
-        includeSecondNationality: h.includeSecondNat || undefined,
         excludeTopN: h.excludeTopN ? Number(h.excludeTopN) : undefined,
         sortBy: h.sortBy,
         limit: 0,
@@ -337,14 +380,23 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
     rangesInitRef.current = true;
     fetchPlayers(init);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [season, onlyAvailable, clubName, horizon, selectedLeagues, selectedNationalities, includeSecondNat, excludeTopN, sortBy]);
+  }, [season, clubName, horizon, excludeTopN, sortBy]);
 
-  // Client-side filtering by sliders, position and team query
+  // Client-side filtering by league, nationality, sliders, position, team query, and availability
   const filteredPlayers = useMemo(() => {
-    const tq = teamQuery.toLowerCase().trim();
+    const tq = norm(teamQuery.trim());
+    const leagueSet = selectedLeagues.length ? new Set(selectedLeagues) : null;
+    const natSet = selectedNationalities.length ? new Set(selectedNationalities) : null;
     return allPlayers.filter((p) => {
+      if (onlyAvailable && !p.is_available) return false;
+      if (leagueSet && !leagueSet.has(p.league)) return false;
+      if (natSet) {
+        const mainMatch = natSet.has(p.nationality);
+        const secondMatch = includeSecondNat && p.other_nationalities?.some((n) => natSet.has(n));
+        if (!mainMatch && !secondMatch) return false;
+      }
       if (position && p.position !== position) return false;
-      if (tq && !p.team.toLowerCase().includes(tq)) return false;
+      if (tq && !norm(p.team).includes(tq)) return false;
       const age = p.age ?? 0;
       if (age < fAge[0] || age > fAge[1]) return false;
       if (p.market_value < fMv[0] || p.market_value > fMv[1]) return false;
@@ -356,9 +408,16 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
       if (p.growth_pct < fGp) return false;
       return true;
     });
-  }, [allPlayers, position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp]);
+  }, [allPlayers, onlyAvailable, selectedLeagues, selectedNationalities, includeSecondNat, position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp]);
 
-  const displayResults = filteredPlayers.slice(0, 50);
+  const [xgPage, setXgPage] = useState(1);
+  const [xgPageSize, setXgPageSize] = useState<number>(50);
+  // Reset page when filters change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setXgPage(1); }, [onlyAvailable, selectedLeagues, selectedNationalities, includeSecondNat, position, teamQuery, fAge, fMv, fPv, fFp, fXg, fNb, fRoi, fGp]);
+
+  const xgTotalPages = Math.max(1, Math.ceil(filteredPlayers.length / xgPageSize));
+  const displayResults = filteredPlayers.slice((xgPage - 1) * xgPageSize, xgPage * xgPageSize);
 
   const toggleLeague = (id: string) => {
     setSelectedLeagues((prev) =>
@@ -600,60 +659,63 @@ function XGrowthTab({ lang, season, clubName, leagues }: Props) {
             <strong>{filteredPlayers.length}</strong> / {allPlayers.length} {t(lang, "xgrowth_total")}
           </p>
           {displayResults.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs text-gray-500">
-                    <th className="py-2 pr-2">#</th>
-                    <th className="py-2 pr-2">{t(lang, "xgrowth_col_player")}</th>
-                    <th className="py-2 pr-2">Pos</th>
-                    <th className="py-2 pr-2">{lang === "es" ? "Edad" : "Age"}</th>
-                    <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_value")}</th>
-                    <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_predicted")}</th>
-                    <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_label")}</th>
-                    <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_net_benefit")}</th>
-                    <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_roi")}</th>
-                    <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_growth_pct")}</th>
-                    <th className="py-2 text-right">{t(lang, "fair_price")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayResults.map((p, i) => (
-                    <tr key={p.player_id} className="border-b border-gray-100 hover:bg-gray-50">
-                      <td className="py-1.5 pr-2 text-xs text-gray-400">{i + 1}</td>
-                      <td className="py-1.5 pr-2 font-medium">
-                        <div className="flex items-center gap-2">
-                          {p.img_url ? (
-                            <img src={p.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
-                          ) : (
-                            <div className="w-6 h-6 rounded-full bg-gray-200" />
-                          )}
-                          <span className="whitespace-nowrap">{p.name}</span>
-                          <span className="text-[10px] text-gray-400 whitespace-nowrap">{p.team}</span>
-                        </div>
-                      </td>
-                      <td className="py-1.5 pr-2 text-xs">{p.position}</td>
-                      <td className="py-1.5 pr-2 text-xs">{p.age ?? "?"}</td>
-                      <td className="py-1.5 pr-2 text-right text-xs">{formatCurrency(p.market_value)}</td>
-                      <td className="py-1.5 pr-2 text-right text-xs">{formatCurrency(p.predicted_value)}</td>
-                      <td className={`py-1.5 pr-2 text-right text-xs font-semibold ${p.xgrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        {fmtPctInf(p.xgrowth, true)}
-                      </td>
-                      <td className={`py-1.5 pr-2 text-right text-xs font-semibold ${p.net_benefit >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        {formatCurrency(p.net_benefit)}
-                      </td>
-                      <td className={`py-1.5 pr-2 text-right text-xs font-semibold ${p.roi >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        {fmtPctInf(p.roi, true)}
-                      </td>
-                      <td className="py-1.5 pr-2 text-right text-xs">
-                        {fmtPctInf(p.growth_pct)}
-                      </td>
-                      <td className="py-1.5 text-right text-xs">{formatCurrency(p.fair_price)}</td>
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-gray-500">
+                      <th className="py-2 pr-2">#</th>
+                      <th className="py-2 pr-2">{t(lang, "xgrowth_col_player")}</th>
+                      <th className="py-2 pr-2">Pos</th>
+                      <th className="py-2 pr-2">{lang === "es" ? "Edad" : "Age"}</th>
+                      <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_value")}</th>
+                      <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_predicted")}</th>
+                      <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_label")}</th>
+                      <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_net_benefit")}</th>
+                      <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_roi")}</th>
+                      <th className="py-2 pr-2 text-right">{t(lang, "xgrowth_col_growth_pct")}</th>
+                      <th className="py-2 text-right">{t(lang, "fair_price")}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {displayResults.map((p, i) => (
+                      <tr key={p.player_id} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="py-1.5 pr-2 text-xs text-gray-400">{(xgPage - 1) * xgPageSize + i + 1}</td>
+                        <td className="py-1.5 pr-2 font-medium">
+                          <div className="flex items-center gap-2">
+                            {p.img_url ? (
+                              <img src={p.img_url} alt="" className="w-6 h-6 rounded-full object-cover bg-gray-200" />
+                            ) : (
+                              <div className="w-6 h-6 rounded-full bg-gray-200" />
+                            )}
+                            <span className="whitespace-nowrap">{p.name}</span>
+                            <span className="text-[10px] text-gray-400 whitespace-nowrap">{p.team}</span>
+                          </div>
+                        </td>
+                        <td className="py-1.5 pr-2 text-xs">{p.position}</td>
+                        <td className="py-1.5 pr-2 text-xs">{p.age ?? "?"}</td>
+                        <td className="py-1.5 pr-2 text-right text-xs">{formatCurrency(p.market_value)}</td>
+                        <td className="py-1.5 pr-2 text-right text-xs">{formatCurrency(p.predicted_value)}</td>
+                        <td className={`py-1.5 pr-2 text-right text-xs font-semibold ${p.xgrowth >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          {fmtPctInf(p.xgrowth, true)}
+                        </td>
+                        <td className={`py-1.5 pr-2 text-right text-xs font-semibold ${p.net_benefit >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          {formatCurrency(p.net_benefit)}
+                        </td>
+                        <td className={`py-1.5 pr-2 text-right text-xs font-semibold ${p.roi >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          {fmtPctInf(p.roi, true)}
+                        </td>
+                        <td className="py-1.5 pr-2 text-right text-xs">
+                          {fmtPctInf(p.growth_pct)}
+                        </td>
+                        <td className="py-1.5 text-right text-xs">{formatCurrency(p.fair_price)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination lang={lang} total={filteredPlayers.length} page={xgPage} pageSize={xgPageSize} onPage={setXgPage} onPageSize={setXgPageSize} />
+            </>
           )}
         </>
       )}

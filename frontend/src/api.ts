@@ -222,10 +222,10 @@ export const api = {
     return json<XGrowthResults>(`/api/xgrowth?${sp.toString()}`);
   },
 
-  aiSummary: (apiKey: string, language: string) =>
+  aiSummary: (apiKey: string, language: string, result?: SimulationResult) =>
     json<{ summary: string }>("/api/ai-summary", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_key: apiKey, language }),
+      body: JSON.stringify({ api_key: apiKey, language, result_data: result ?? null }),
     }),
 };
