@@ -644,6 +644,9 @@ team-analysis-ai/
 ├── streamlit_app.py              # Streamlit web app
 ├── demo.ipynb                    # Interactive demo notebook
 ├── requirements.txt
+├── Dockerfile                    # Multi-stage Docker build (Node + Python)
+├── docker-compose.yml            # One-command deployment
+├── .dockerignore
 └── README.md
 ```
 
@@ -685,7 +688,35 @@ team-analysis-ai/
 2. **Multiple Leagues & Seasons**: Go to [Input Scraper](../../actions/workflows/input_scraper.yml) → Run workflow → Configure JSON arrays
 3. **Full Data (All Leagues × 10 Seasons)**: Go to [Scheduled Scraper](../../actions/workflows/scheduled_scraper.yml) → Run workflow
 
-### Option 3: Run Locally
+### Option 3: Docker
+
+The easiest way to deploy online. Requires [Docker](https://docs.docker.com/get-docker/). All data (`data/json/`, `ml/models/`, precomputed caches) is baked into the image so the container is fully self-contained.
+
+```bash
+# Clone the repository
+git clone https://github.com/pabloroldan98/team-analysis-ai.git
+cd team-analysis-ai
+
+# (Optional) Add LLM keys for AI analysis
+cp .env.example .env   # then edit .env with your keys
+
+# Build and run (frontend is compiled inside the container automatically)
+docker compose up --build -d
+```
+
+The app will be available at [http://localhost:8000](http://localhost:8000).
+
+To deploy on a cloud provider (AWS EC2, DigitalOcean, Render, Fly.io, Railway, etc.), push the image to a container registry or run `docker compose up` on the server with the same `.env` file.
+
+```bash
+# Stop
+docker compose down
+
+# Rebuild after code or data changes
+docker compose up --build -d
+```
+
+### Option 4: Run Locally
 
 **Prerequisites**
 
@@ -706,7 +737,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-#### Precompute Season Caches (recommended)
+#### Precompute Season Caches (recommended, it should be already done)
 
 Precomputing caches makes the app load instantly instead of spending minutes loading data:
 
