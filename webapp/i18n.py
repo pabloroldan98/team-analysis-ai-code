@@ -53,9 +53,9 @@ TEXT = {
         "final_squad": "Plantilla Final",
         "ai_analysis": "Análisis IA",
         "no_ai_key": "Introduce una API key de LLM para obtener análisis generado por IA.",
-        "ai_supported_providers": "Proveedores soportados: OpenAI, Anthropic y Gemini.",
+        "ai_supported_providers": "Proveedores soportados: ChatGPT, Claude y Gemini.",
         "llm_api_key": "API Key del LLM",
-        "llm_api_key_help": "Se detecta automáticamente: sk-... = OpenAI, sk-ant-... = Anthropic, otro = Gemini",
+        "llm_api_key_help": "Se detecta automáticamente: sk-... = ChatGPT, sk-ant-... = Claude, otro = Gemini",
         "generate_analysis": "Generar análisis",
         "generating": "Generando análisis...",
         "ai_error": "No se pudo generar el análisis. Comprueba tu API key.",
@@ -99,6 +99,8 @@ TEXT = {
         "approach_max_value_help": "Sin filtro: todos los jugadores elegibles son candidatos.",
         "approach_young_talents": "Jóvenes promesas",
         "approach_young_talents_help": "Solo considera jugadores de 23 años o menos. Ideal para construir un proyecto a largo plazo.",
+        "approach_veteran_players": "Veteranos",
+        "approach_veteran_players_help": "Solo considera jugadores de 30 años o más. Ideal para fichajes de experiencia e impacto inmediato.",
         "approach_balanced": "Equilibrado",
         "approach_balanced_help": "Prioriza jugadores en su mejor edad (25-29) con alto valor predicho. Equilibra rendimiento inmediato y valor.",
 
@@ -117,7 +119,7 @@ TEXT = {
 
         # Simulation speed
         "sim_speed_title": "Velocidad de simulación",
-        "sim_speed_local": "Local (rápida)",
+        "sim_speed_local": "Más rápida",
         "sim_speed_local_help": "Ejecución más rápida con poda agresiva de candidatos. Resultados aceptables.",
         "sim_speed_fast": "Rápida",
         "sim_speed_fast_help": "Equilibrio entre velocidad y calidad de resultados.",
@@ -236,9 +238,9 @@ TEXT = {
         "final_squad": "Final Squad",
         "ai_analysis": "AI Analysis",
         "no_ai_key": "Enter an LLM API key to get an AI-generated analysis.",
-        "ai_supported_providers": "Supported providers: OpenAI, Anthropic and Gemini.",
+        "ai_supported_providers": "Supported providers: ChatGPT, Claude and Gemini.",
         "llm_api_key": "LLM API Key",
-        "llm_api_key_help": "Auto-detected: sk-... = OpenAI, sk-ant-... = Anthropic, other = Gemini",
+        "llm_api_key_help": "Auto-detected: sk-... = ChatGPT, sk-ant-... = Claude, other = Gemini",
         "generate_analysis": "Generate analysis",
         "generating": "Generating analysis...",
         "ai_error": "Could not generate analysis. Check your API key.",
@@ -282,6 +284,8 @@ TEXT = {
         "approach_max_value_help": "No filter: all eligible players are candidates.",
         "approach_young_talents": "Young talents",
         "approach_young_talents_help": "Only considers players aged 23 or under. Great for building a long-term project.",
+        "approach_veteran_players": "Veterans",
+        "approach_veteran_players_help": "Only considers players aged 30 or older. Ideal for experienced signings with immediate impact.",
         "approach_balanced": "Balanced",
         "approach_balanced_help": "Prioritizes prime-age players (25-29) with high predicted value. Balances immediate performance and value.",
 
@@ -300,7 +304,7 @@ TEXT = {
 
         # Simulation speed
         "sim_speed_title": "Simulation speed",
-        "sim_speed_local": "Local (fast)",
+        "sim_speed_local": "Faster",
         "sim_speed_local_help": "Fastest execution with aggressive candidate pruning. Acceptable results.",
         "sim_speed_fast": "Fast",
         "sim_speed_fast_help": "Balance between speed and result quality.",
