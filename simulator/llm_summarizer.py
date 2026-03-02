@@ -15,25 +15,11 @@ if TYPE_CHECKING:
     from player import Player
 
 
-def generate_summary_from_result(
+def _build_prompt_from_result(
     result: "TransferResult",
-    provider: Optional[str] = None,
-    api_key: Optional[str] = None,
     language: Optional[str] = None,
-) -> Optional[str]:
-    """
-    Generate AI summary from a TransferResult object.
-    
-    Args:
-        result: TransferResult from the simulation
-        provider: LLM provider ("openai", "anthropic", "gemini")
-        api_key: Optional API key override
-        language: Response language ("es" for Spanish, "en" for English, etc.)
-    
-    Returns:
-        AI-generated summary text, or None if no API key is available
-    """
-    # Build detailed info about sold players
+) -> str:
+    """Build the LLM prompt from a TransferResult (without calling any LLM)."""
     sold_info = []
     for sp in result.players_sold:
         p = sp.player
@@ -42,49 +28,41 @@ def generate_summary_from_result(
             sold_info.append(f"  - {p.name} ({p.position}): €{mv:.1f}M -> {sp.destination_team}")
         else:
             sold_info.append(f"  - {p.name} ({p.position}): €{mv:.1f}M (no buyer found)")
-    
-    # Build detailed info about bought players
+
     bought_info = []
     for p in result.recommended_signings:
         mv = (p.market_value or 0) / 1e6
         pv = (p.predicted_value or 0) / 1e6
         bought_info.append(f"  - {p.name} ({p.position}, from {p.team}): €{mv:.1f}M -> €{pv:.1f}M predicted")
-    
-    # Get IDs of sold players to exclude them from remaining squad
+
     sold_player_ids = {sp.player.player_id for sp in result.players_sold}
-    
-    # Build remaining squad info (current squad minus sold players, grouped by position)
-    rest_squad_by_position = {"GK": [], "DEF": [], "MID": [], "ATT": [], "Other": []}
+    rest_squad_by_position: dict = {"GK": [], "DEF": [], "MID": [], "ATT": [], "Other": []}
     rest_squad_players = [p for p in result.current_squad if p.player_id not in sold_player_ids]
-    
+
     for p in rest_squad_players:
         mv = (p.market_value or 0) / 1e6
         pv = (p.predicted_value or 0) / 1e6
         player_str = f"    - {p.name}: €{mv:.1f}M (predicted: €{pv:.1f}M)"
         pos = p.position if p.position in rest_squad_by_position else "Other"
         rest_squad_by_position[pos].append(player_str)
-    
-    rest_squad_info = []
+
+    rest_squad_info: list = []
     for pos in ["GK", "DEF", "MID", "ATT"]:
         if rest_squad_by_position[pos]:
             rest_squad_info.append(f"  {pos} ({len(rest_squad_by_position[pos])}):")
             rest_squad_info.extend(rest_squad_by_position[pos])
-    
-    # Calculate squad totals
+
     sold_total_value = sum((sp.player.market_value or 0) for sp in result.players_sold) / 1e6
     sold_total_predicted = sum((sp.player.predicted_value or 0) for sp in result.players_sold) / 1e6
     bought_total_value = sum((p.market_value or 0) for p in result.recommended_signings) / 1e6
     bought_total_predicted = sum((p.predicted_value or 0) for p in result.recommended_signings) / 1e6
     rest_squad_total_value = sum((p.market_value or 0) for p in rest_squad_players) / 1e6
     rest_squad_total_predicted = sum((p.predicted_value or 0) for p in rest_squad_players) / 1e6
-    # squad_total_predicted = sum((p.predicted_value or 0) for p in result.current_squad) / 1e6
-    
-    # Calculate totals
-    total_cost = sum((p.market_value or 0) for p in result.recommended_signings) / 1e6
-    total_predicted = sum((p.predicted_value or 0) for p in result.recommended_signings) / 1e6
+    total_cost = bought_total_value
+    total_predicted = bought_total_predicted
     net_benefit = total_predicted - total_cost
-    
-    prompt = _build_detailed_prompt(
+
+    return _build_detailed_prompt(
         club_name=result.club_name,
         season=result.season,
         initial_budget=result.initial_budget,
@@ -105,9 +83,18 @@ def generate_summary_from_result(
         remaining_budget=result.total_budget - total_cost,
         language=language,
     )
-    
+
+
+def generate_summary_from_result(
+    result: "TransferResult",
+    provider: Optional[str] = None,
+    api_key: Optional[str] = None,
+    language: Optional[str] = None,
+) -> Optional[str]:
+    """Generate AI summary from a TransferResult object."""
+    prompt = _build_prompt_from_result(result, language=language)
     provider = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()
-    
+
     if provider == "anthropic":
         return _call_anthropic(prompt, api_key=api_key)
     elif provider == "gemini":
@@ -128,7 +115,7 @@ def generate_summary(
     api_key: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Generate AI summary of the simulation using OpenAI, Anthropic, or Gemini.
+    Generate AI summary of the simulation using ChatGPT, Claude, or Gemini.
     
     Args:
         club_name: Name of the club
@@ -276,7 +263,7 @@ Provide a brief strategic assessment (3-5 sentences) covering:
 Respond in the same language as the club name if it's Spanish, otherwise English."""
 
 
-def _call_openai(prompt: str, api_key: Optional[str] = None) -> Optional[str]:
+def _call_openai(prompt: str, api_key: Optional[str] = None, *, raise_on_error: bool = False) -> Optional[str]:
     """Call OpenAI GPT API. Returns None if no API key available."""
     api_key = api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -292,11 +279,13 @@ def _call_openai(prompt: str, api_key: Optional[str] = None) -> Optional[str]:
         )
         return response.choices[0].message.content or None
     except Exception as e:
+        if raise_on_error:
+            raise
         print(f"  Warning: OpenAI API error: {e}")
         return None
 
 
-def _call_anthropic(prompt: str, api_key: Optional[str] = None) -> Optional[str]:
+def _call_anthropic(prompt: str, api_key: Optional[str] = None, *, raise_on_error: bool = False) -> Optional[str]:
     """Call Anthropic Claude API. Returns None if no API key available."""
     api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -313,11 +302,13 @@ def _call_anthropic(prompt: str, api_key: Optional[str] = None) -> Optional[str]
         text = response.content[0].text if response.content else ""
         return text or None
     except Exception as e:
+        if raise_on_error:
+            raise
         print(f"  Warning: Anthropic API error: {e}")
         return None
 
 
-def _call_gemini(prompt: str, api_key: Optional[str] = None) -> Optional[str]:
+def _call_gemini(prompt: str, api_key: Optional[str] = None, *, raise_on_error: bool = False) -> Optional[str]:
     """Call Google Gemini API. Returns None if no API key available."""
     api_key = api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -335,5 +326,7 @@ def _call_gemini(prompt: str, api_key: Optional[str] = None) -> Optional[str]:
         )
         return response.text or None
     except Exception as e:
+        if raise_on_error:
+            raise
         print(f"  Warning: Gemini API error: {e}")
         return None

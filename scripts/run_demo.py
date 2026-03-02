@@ -55,9 +55,14 @@ def build_frontend():
         subprocess.run(["npm", "install"], cwd=str(FRONTEND_DIR), check=True, shell=True)
 
     dist_dir = FRONTEND_DIR / "dist"
-    if not dist_dir.exists():
-        print("[INFO] Building frontend (npm run build)...")
-        subprocess.run(["npm", "run", "build"], cwd=str(FRONTEND_DIR), check=True, shell=True)
+    print("[INFO] Building frontend (npm run build)...")
+    subprocess.run(
+        ["npm", "run", "build"],
+        cwd=str(FRONTEND_DIR),
+        check=True,
+        shell=True,
+        stderr=subprocess.STDOUT,
+    )
 
     return dist_dir.exists()
 
