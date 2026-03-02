@@ -9,7 +9,7 @@
   "val_mdape": 75.21956137248448,
   "num_train_samples": 5,
   "num_val_samples": 875,
-  "num_features": 64,
+  "num_features": 66,
   "train_seasons": [
     "2002-2003",
     "2003-2004",

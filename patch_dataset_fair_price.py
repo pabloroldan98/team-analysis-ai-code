@@ -54,13 +54,14 @@ def _compute_fair_prices_for_cutoff(
     by_player: Dict[str, List[Valuation]],
     cutoff_date: datetime,
 ) -> Dict[str, float]:
-    """Fair price via linear extrapolation from the last 2 valuations <= cutoff.
+    """Fair price via linear extrapolation from the last 2 unique valuations <= cutoff.
 
-    Mirrors compute_fair_prices() but avoids importing the full function to
-    keep dependencies lightweight.
+    Deduplicates valuations by (date, amount) before extrapolating.
+    Mirrors compute_fair_prices() from feature_engineering.py.
     """
     result: Dict[str, float] = {}
     for pid, vals in by_player.items():
+        seen: set = set()
         pts: List[Tuple[datetime, float]] = []
         for v in vals:
             if v.valuation_amount is None:
@@ -68,7 +69,10 @@ def _compute_fair_prices_for_cutoff(
             d = parse_date(v.valuation_date or "")
             if d is None or d > cutoff_date:
                 continue
-            pts.append((d, v.valuation_amount))
+            key = (d, v.valuation_amount)
+            if key not in seen:
+                seen.add(key)
+                pts.append(key)
         if not pts:
             continue
         pts.sort(key=lambda x: x[0])

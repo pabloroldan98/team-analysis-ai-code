@@ -447,16 +447,23 @@ FAIR_PRICE_CAP = 250_000_000
 def compute_fair_prices(
     by_player: Dict[str, List[Valuation]],
     cutoff_date: datetime,
+    exclude_latest: bool = False,
 ) -> Dict[str, float]:
-    """Fair price via linear extrapolation from the last 2 valuations <= cutoff.
+    """Fair price via linear extrapolation from valuations <= cutoff.
 
-    Uses the already-grouped *by_player* dict (player_id -> [Valuation]) so
-    there is no redundant full-scan of all valuations.
+    Args:
+        by_player: player_id -> [Valuation] mapping.
+        cutoff_date: Reference date for the extrapolation.
+        exclude_latest: If True, drop the most recent valuation before
+            extrapolating.  This makes the result independent of the
+            ``current_value`` (useful as an ML feature: "where the trend
+            said the value should be, without knowing the latest reading").
 
     Returns ``{player_id: fair_price}`` clamped to [0, FAIR_PRICE_CAP].
     """
     result: Dict[str, float] = {}
-    for pid, vals in by_player.items():
+    for pid, vals in tqdm(by_player.items(), desc="Computing fair prices", disable=not bool(by_player)):
+        seen: set = set()
         pts: List[Tuple[datetime, float]] = []
         for v in vals:
             if v.valuation_amount is None:
@@ -464,10 +471,15 @@ def compute_fair_prices(
             d = parse_date(v.valuation_date or "")
             if d is None or d > cutoff_date:
                 continue
-            pts.append((d, v.valuation_amount))
+            key = (d, v.valuation_amount)
+            if key not in seen:
+                seen.add(key)
+                pts.append(key)
         if not pts:
             continue
         pts.sort(key=lambda x: x[0])
+        if exclude_latest and len(pts) > 1:
+            pts = pts[:-1]
         if len(pts) == 1:
             result[pid] = max(0.0, min(FAIR_PRICE_CAP, pts[0][1]))
             continue

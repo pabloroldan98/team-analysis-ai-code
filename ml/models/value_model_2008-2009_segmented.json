@@ -1,0 +1,139 @@
+{
+  "season": "2008-2009",
+  "weighted_average": {
+    "total_eval_samples": 4046,
+    "total_train_samples": 4375,
+    "total_val_samples": 4046,
+    "val_rmse": 1.4133150964852528,
+    "val_mae": 0.9837200633966571,
+    "val_mape": 100.24290527511579,
+    "val_mdape": 56.248547863800624,
+    "eval_rmse_M": 1.412777452122642,
+    "eval_mae_M": 0.9824297395582572,
+    "eval_r2": -0.28162269851254207,
+    "eval_mape": 100.03298637924925,
+    "eval_mdape": 56.248550110504404,
+    "eval_within_10pct": 9.449744578351375,
+    "eval_within_25pct": 24.330522105535067,
+    "eval_within_50pct": 45.90482780146918
+  },
+  "segments": {
+    "under_1M": {
+      "train_rmse": 0.2554051595817188,
+      "val_rmse": 0.8830765484419847,
+      "train_mae": 0.1588586063519108,
+      "val_mae": 0.5824077983482129,
+      "train_mape": 25.196710289418057,
+      "val_mape": 113.21968362843629,
+      "train_mdape": 17.12097137693375,
+      "val_mdape": 63.81679577262778,
+      "num_train_samples": 3060,
+      "num_val_samples": 2860,
+      "num_features": 66,
+      "train_seasons": [
+        "2002-2003",
+        "2003-2004",
+        "2004-2005",
+        "2005-2006",
+        "2006-2007",
+        "2007-2008"
+      ],
+      "val_seasons": [
+        "2008-2009"
+      ],
+      "eval_season": "2008-2009",
+      "eval_samples": 2860,
+      "eval_rmse_M": 0.8826779390606571,
+      "eval_mae_M": 0.5809830926027418,
+      "eval_r2": -0.5599850906722783,
+      "eval_mape": 112.9438499570483,
+      "eval_mdape": 63.81679725646973,
+      "eval_within_10pct": 8.415841584158416,
+      "eval_within_25pct": 20.346534653465344,
+      "eval_within_50pct": 39.40594059405941,
+      "segment": "under_1M",
+      "status": "trained",
+      "season": "2008-2009",
+      "segment_range": "\u20ac0M \u2013 \u20ac1M",
+      "total_segment_samples": 5920
+    },
+    "1M_10M": {
+      "train_rmse": 0.4111642395426338,
+      "val_rmse": 2.354223530148702,
+      "train_mae": 0.2490034983596518,
+      "val_mae": 1.6896253325518962,
+      "train_mape": 7.731944424336803,
+      "val_mape": 72.4458988154483,
+      "train_mdape": 4.192519187927246,
+      "val_mdape": 39.77706432342528,
+      "num_train_samples": 1183,
+      "num_val_samples": 1088,
+      "num_features": 66,
+      "train_seasons": [
+        "2005-2006",
+        "2006-2007",
+        "2007-2008"
+      ],
+      "val_seasons": [
+        "2008-2009"
+      ],
+      "eval_season": "2008-2009",
+      "eval_samples": 1088,
+      "eval_rmse_M": 2.3532719759604683,
+      "eval_mae_M": 1.6885720259892447,
+      "eval_r2": 0.3624563884858989,
+      "eval_mape": 72.39034044030971,
+      "eval_mdape": 39.777069091796875,
+      "eval_within_10pct": 10.69723018147087,
+      "eval_within_25pct": 31.42311365807068,
+      "eval_within_50pct": 59.69436485195797,
+      "segment": "1M_10M",
+      "status": "trained",
+      "season": "2008-2009",
+      "segment_range": "\u20ac1M \u2013 \u20ac10M",
+      "total_segment_samples": 2271
+    },
+    "10M_100M": {
+      "train_rmse": 0.6417418743427408,
+      "val_rmse": 6.441619908504786,
+      "train_mae": 0.23624439627835242,
+      "val_mae": 4.858497055209413,
+      "train_mape": 1.002986270311962,
+      "val_mape": 30.136343414111632,
+      "train_mdape": 0.18630300249371834,
+      "val_mdape": 18.246354727909484,
+      "num_train_samples": 132,
+      "num_val_samples": 98,
+      "num_features": 66,
+      "train_seasons": [
+        "2005-2006",
+        "2006-2007",
+        "2007-2008"
+      ],
+      "val_seasons": [
+        "2008-2009"
+      ],
+      "eval_season": "2008-2009",
+      "eval_samples": 98,
+      "eval_rmse_M": 6.441619956425928,
+      "eval_mae_M": 4.858497113597636,
+      "eval_r2": 0.6914221476358435,
+      "eval_mape": 30.136343002319336,
+      "eval_mdape": 18.24635124206543,
+      "eval_within_10pct": 25.773195876288657,
+      "eval_within_25pct": 61.855670103092784,
+      "eval_within_50pct": 82.4742268041237,
+      "segment": "10M_100M",
+      "status": "trained",
+      "season": "2008-2009",
+      "segment_range": "\u20ac10M \u2013 \u20ac100M",
+      "total_segment_samples": 230
+    },
+    "over_100M": {
+      "segment": "over_100M",
+      "status": "skipped",
+      "reason": "insufficient samples (0)",
+      "samples": 0
+    }
+  }
+}
