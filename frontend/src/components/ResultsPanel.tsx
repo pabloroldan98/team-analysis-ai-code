@@ -204,7 +204,7 @@ function FinalSquad({
 
 /* ── AIAnalysis ─────────────────────────────────────────────────────────── */
 
-function AIAnalysis({ lang }: { lang: Lang }) {
+function AIAnalysis({ lang, result }: { lang: Lang; result: SimulationResult }) {
   const [apiKey, setApiKey] = useState("");
   const [summary, setSummary] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -214,10 +214,14 @@ function AIAnalysis({ lang }: { lang: Lang }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.aiSummary(apiKey, lang);
+      const res = await api.aiSummary(apiKey, lang, result);
       setSummary(res.summary);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      let msg = err instanceof Error ? err.message : String(err);
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.detail) msg = parsed.detail;
+      } catch { /* not JSON, keep original */ }
       setError(`${t(lang, "ai_error")} — ${msg}`);
     } finally {
       setLoading(false);
@@ -410,7 +414,7 @@ export default function ResultsPanel({ lang, result, clubs, squad, objective = "
 
       {/* AI Analysis */}
       <hr className="border-gray-200" />
-      <AIAnalysis lang={lang} />
+      <AIAnalysis lang={lang} result={result} />
     </div>
   );
 }

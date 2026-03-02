@@ -16,9 +16,9 @@ function totalCombinations(total: number, maxPerPos = 3): number[][] {
   return combos;
 }
 
-const APPROACHES: Approach[] = ["max_value", "young_talents", "balanced"];
+const APPROACHES: Approach[] = ["max_value", "young_talents", "balanced", "veteran_players"];
 const OBJECTIVES: Objective[] = ["smv", "net_benefit", "roi", "growth_pct"];
-const SIM_SPEEDS: SimSpeed[] = ["local", "fast", "standard"];
+const SIM_SPEEDS: SimSpeed[] = ["standard", "fast", "local"];
 
 /* ── sub-components ─────────────────────────────────────────────────────── */
 
@@ -94,7 +94,7 @@ function ClubSearchSelect({
   }, [open]);
 
   const filtered = clubs.filter((c) =>
-    c.name.toLowerCase().includes(query.toLowerCase()),
+    norm(c.name).includes(norm(query)),
   );
 
   return (
@@ -157,7 +157,7 @@ function SeasonClubSelector({
           value={season}
           onChange={(e) => onSeasonChange(e.target.value)}
         >
-          <option value="today">{todayLabel}</option>
+          {/* <option value="today">{todayLabel}</option> */}
           {seasons.map((s) => (
             <option key={s} value={s}>{s}</option>
           ))}
@@ -172,30 +172,40 @@ function SeasonClubSelector({
 }
 
 function SellRecList({
-  lang, items, selected, onToggle,
+  lang, items, selected, onToggle, mode = "decline",
 }: {
   lang: Lang; items: SellRecommendation[]; selected: string[];
   onToggle: (id: string) => void;
+  mode?: "decline" | "squad";
 }) {
   return (
     <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
       {items.map((r) => {
-        const isSelected = selected.includes(r.player_id);
+        const loan = !!r.on_loan;
+        const isSelected = !loan && selected.includes(r.player_id);
         const posKey = POS_KEYS[r.position] ?? "pos_def";
+        const diff = r.predicted_value - r.market_value;
+        const diffPct = r.market_value > 0 ? (diff / r.market_value) * 100 : 0;
+        const isGrowth = diff >= 0;
         return (
           <button
             key={r.player_id}
-            onClick={() => onToggle(r.player_id)}
+            disabled={loan}
+            onClick={() => !loan && onToggle(r.player_id)}
+            title={loan ? t(lang, "on_loan_not_available") : undefined}
             className={`w-full flex items-center justify-between text-left px-3 py-1.5 rounded-lg text-sm transition-colors ${
-              isSelected
-                ? "bg-red-50 border border-red-200"
-                : "bg-gray-50 border border-transparent hover:bg-gray-100"
+              loan
+                ? "bg-gray-50 border border-transparent opacity-40 cursor-not-allowed"
+                : isSelected
+                  ? "bg-red-50 border border-red-200"
+                  : "bg-gray-50 border border-transparent hover:bg-gray-100"
             }`}
           >
             <div className="flex items-center gap-2 min-w-0">
               <span className={`font-medium truncate ${isSelected ? "text-red-700" : ""}`}>
                 {r.name}
               </span>
+              {loan && <span className="text-[10px] italic opacity-70">({t(lang, "on_loan_label")})</span>}
               <span className="text-xs text-gray-400">
                 {t(lang, posKey)}, {r.age ?? "?"}
               </span>
@@ -209,9 +219,15 @@ function SellRecList({
                   {t(lang, "fair_price")}: {formatCurrency(r.fair_price)}
                 </span>
               )}
-              <span className="text-xs font-semibold text-red-600">
-                ▼ {formatCurrency(r.decline)} ({(r.decline_pct * 100).toFixed(0)}%)
-              </span>
+              {mode === "squad" ? (
+                <span className={`text-xs font-semibold ${isGrowth ? "text-green-600" : "text-red-600"}`}>
+                  {isGrowth ? "▲" : "▼"} {formatCurrency(Math.abs(diff))} ({diffPct >= 0 ? "+" : ""}{diffPct.toFixed(0)}%)
+                </span>
+              ) : (
+                <span className="text-xs font-semibold text-red-600">
+                  ▼ {formatCurrency(r.decline)} ({(r.decline_pct * 100).toFixed(0)}%)
+                </span>
+              )}
             </div>
           </button>
         );
@@ -235,7 +251,7 @@ function SellRecommendationsPanel({
   onToggle: (id: string) => void;
   onSelectAll: (ids: string[]) => void;
 }) {
-  const [tab, setTab] = useState<"peak" | "decline">("peak");
+  const [tab, setTab] = useState<"squad" | "peak" | "decline">("squad");
 
   if (loading) {
     return (
@@ -245,32 +261,33 @@ function SellRecommendationsPanel({
     );
   }
 
-  const peakPlayers = recommendations.filter((r) => r.decline > 0);
+  const squadByValue = [...recommendations].sort((a, b) => b.market_value - a.market_value);
+  const peakPlayers = recommendations.filter((r) => r.decline > 0 && !r.on_loan);
   const topDecline = [...peakPlayers].sort((a, b) => b.decline - a.decline).slice(0, 5);
 
-  if (!peakPlayers.length && !topDecline.length) return null;
+  if (!recommendations.length) return null;
 
-  const currentList = tab === "peak" ? peakPlayers : topDecline;
-  const currentIds = currentList.map((r) => r.player_id);
+  const currentList = tab === "squad" ? squadByValue : tab === "peak" ? peakPlayers : topDecline;
+  const selectableIds = currentList.filter((r) => !r.on_loan).map((r) => r.player_id);
 
   const handleSelectAll = () => {
-    const newIds = currentIds.filter((id) => !selected.includes(id));
+    const newIds = selectableIds.filter((id) => !selected.includes(id));
     if (newIds.length > 0) onSelectAll([...selected, ...newIds]);
   };
 
   const handleDeselectAll = () => {
-    onSelectAll(selected.filter((id) => !currentIds.includes(id)));
+    onSelectAll(selected.filter((id) => !selectableIds.includes(id)));
   };
 
-  const hasAnySelected = currentIds.some((id) => selected.includes(id));
+  const hasAnySelected = selectableIds.some((id) => selected.includes(id));
 
   return (
     <div>
       <h3 className="section-title">{t(lang, "sell_recommendations")}</h3>
       <p className="text-xs text-gray-500 mb-3">{t(lang, "sell_rec_help")}</p>
 
-      <div className="flex gap-2 mb-3">
-        {(["peak", "decline"] as const).map((key) => (
+      <div className="flex gap-2 mb-3 flex-wrap">
+        {(["squad", "peak", "decline"] as const).map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -282,12 +299,12 @@ function SellRecommendationsPanel({
       </div>
 
       <p className="text-[11px] text-gray-400 mb-2">
-        {t(lang, tab === "peak" ? "sell_rec_peak_desc" : "sell_rec_decline_desc")}
+        {t(lang, `sell_rec_${tab}_desc`)}
       </p>
 
       {currentList.length === 0 ? (
         <p className="text-xs text-gray-400 italic">
-          {t(lang, tab === "peak" ? "sell_rec_no_peak" : "sell_rec_no_decline")}
+          {t(lang, `sell_rec_no_${tab}`)}
         </p>
       ) : (
         <>
@@ -296,7 +313,7 @@ function SellRecommendationsPanel({
               onClick={handleSelectAll}
               className="text-xs text-primary hover:text-primary-dark underline"
             >
-              {t(lang, tab === "peak" ? "sell_rec_select_all_peak" : "sell_rec_select_all_decline")}
+              {t(lang, `sell_rec_select_all_${tab}`)}
             </button>
             {hasAnySelected && (
               <button
@@ -307,7 +324,7 @@ function SellRecommendationsPanel({
               </button>
             )}
           </div>
-          <SellRecList lang={lang} items={currentList} selected={selected} onToggle={onToggle} />
+          <SellRecList lang={lang} items={currentList} selected={selected} onToggle={onToggle} mode={tab === "squad" ? "squad" : "decline"} />
         </>
       )}
     </div>
@@ -366,11 +383,9 @@ function SellSelection({
                     <span className={`text-[10px] ${active ? "opacity-80" : "opacity-70"}`}>
                       {formatCurrency(mv)}
                     </span>
-                    {!loan && (
-                      <span className={`text-[10px] ${active ? "text-white/80" : growing ? "text-green-600" : "text-red-500"}`}>
-                        → {formatCurrency(pv)}
-                      </span>
-                    )}
+                    <span className={`text-[10px] ${active ? "text-white/80" : growing ? "text-green-600" : "text-red-500"}`}>
+                      → {formatCurrency(pv)}
+                    </span>
                   </button>
                 );
               })}
@@ -493,6 +508,26 @@ function BudgetInput({
   lang: Lang; budget: number; setBudget: (n: number) => void;
   unlimited: boolean; setUnlimited: (b: boolean) => void;
 }) {
+  const [draft, setDraft] = useState(String(budget));
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) {
+      setDraft(String(budget));
+    }
+  }, [budget]);
+
+  const commit = (raw: string) => {
+    const n = Math.round(Number(raw));
+    if (!isNaN(n)) {
+      const clamped = Math.max(-2000, Math.min(2000, n));
+      setBudget(clamped);
+      setDraft(String(clamped));
+    } else {
+      setDraft(String(budget));
+    }
+  };
+
   return (
     <div>
       <h3 className="section-title">{t(lang, "budget_title")}</h3>
@@ -500,9 +535,12 @@ function BudgetInput({
       <div className="flex items-end gap-4">
         <div className="flex-1">
           <input
+            ref={inputRef}
             type="number" min={-2000} max={2000} step={10}
-            value={budget} disabled={unlimited}
-            onChange={(e) => setBudget(Number(e.target.value))}
+            value={draft} disabled={unlimited}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={(e) => commit(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") commit((e.target as HTMLInputElement).value); }}
             className="input-field"
           />
         </div>
@@ -624,7 +662,7 @@ function SearchableMultiSelect({
   const available = items.filter(
     (item) =>
       !selected.includes(keyFn(item)) &&
-      labelFn(item).toLowerCase().includes(query.toLowerCase())
+      norm(labelFn(item)).includes(norm(query))
   );
 
   return (
