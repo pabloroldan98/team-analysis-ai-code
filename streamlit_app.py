@@ -519,7 +519,7 @@ def render_budget(lang: str):
 # STEP 6 – SIGNING APPROACH
 # =============================================================================
 
-APPROACHES = ["max_value", "young_talents", "balanced"]
+APPROACHES = ["max_value", "young_talents", "veteran_players", "balanced"]
 OBJECTIVES = ["smv", "net_benefit", "roi", "value_growth", "growth_pct"]
 SIM_SPEEDS = ["local", "fast", "standard"]
 
@@ -1159,15 +1159,18 @@ def render_ai_section(lang: str, result):
 
     if st.button(t(lang, "generate_analysis"), type="primary", disabled=not api_key):
         provider = _detect_llm_provider(api_key)
-        with st.spinner(t(lang, "generating")):
-            summary = result.generate_llm_summary(
-                provider=provider, api_key=api_key, language=lang,
-            )
-        if summary:
-            st.session_state["llm_summaries"][lang] = summary
-            st.rerun()
-        else:
-            st.warning(t(lang, "ai_error"))
+        try:
+            with st.spinner(t(lang, "generating")):
+                summary = result.generate_llm_summary(
+                    provider=provider, api_key=api_key, language=lang,
+                )
+            if summary:
+                st.session_state["llm_summaries"][lang] = summary
+                st.rerun()
+            else:
+                st.warning(t(lang, "ai_error"))
+        except Exception as exc:
+            st.error(f"{t(lang, 'ai_error')} — {exc}")
 
 
 # =============================================================================

@@ -1005,6 +1005,7 @@ class TransferSimulator:
             approach: Player filtering / weighting strategy:
                 - ``"max_value"``: no filter, all eligible players (default)
                 - ``"young_talents"``: only players ≤ 23
+                - ``"veteran_players"``: only players ≥ 30
                 - ``"max_profit"``: legacy alias → sets objective to net_benefit
                 - ``"balanced"``: age-weighted predicted-value bonus
             objective: What the knapsack optimises:
@@ -1216,6 +1217,14 @@ class TransferSimulator:
             ]
             if verbose:
                 print(f"  Approach '{approach}': filtered to {len(knapsack_players)} players (age ≤ {max_age})")
+
+        elif approach == "veteran_players":
+            min_age = 30
+            knapsack_players = [
+                p for p in available_players if (p.age or 0) >= min_age
+            ]
+            if verbose:
+                print(f"  Approach '{approach}': filtered to {len(knapsack_players)} players (age ≥ {min_age})")
 
         elif approach == "balanced":
             _remap_to_originals = True
@@ -1438,7 +1447,7 @@ def main():
     parser.add_argument("--llm-api-key", type=str, default=None,
                         help="LLM API key (or use env vars)")
     parser.add_argument("--approach", type=str, default="max_value",
-                        choices=["max_value", "young_talents", "max_profit", "balanced"],
+                        choices=["max_value", "young_talents", "veteran_players", "max_profit", "balanced"],
                         help="Signing approach (default: max_value)")
     
     args = parser.parse_args()

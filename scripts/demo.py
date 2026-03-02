@@ -255,7 +255,7 @@ def run_demo(
 
     # ── 6. AI Summary preview ─────────────────────────────────────────
     subheader("6 / 6  AI Summary  (prompt preview — needs API key to generate)")
-    print(f"  The system generates a structured report using OpenAI/Anthropic/Gemini")
+    print(f"  The system generates a structured report using ChatGPT/Claude/Gemini")
     print(f"  with detailed sale-by-sale and signing-by-signing reasoning.\n")
     print(f"  {DIM}To generate a real summary, set OPENAI_API_KEY and run:{RESET}")
     print(f"  {DIM}  result.generate_llm_summary(provider='openai'){RESET}")
