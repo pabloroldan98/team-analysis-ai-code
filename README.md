@@ -265,7 +265,7 @@ This is checked by loading the **full transfer history** and verifying whether t
 
 An **XGBoost** model predicts the market value of players one year into the future.
 
-#### Feature Engineering (60+ features)
+#### Feature Engineering (65+ features)
 
 Each row in the training dataset represents **one player at one point in time** (specifically, 01/07 of each year — the opening of the summer transfer window). Features include:
 
@@ -279,6 +279,8 @@ Each row in the training dataset represents **one player at one point in time** 
 | **Percentiles** | current value percentile, historical percentiles, diff/trend/pct percentiles |
 | **Derived** | value volatility (std/mean of recent values), value acceleration (trend change), peak ratio (current/max), age-value ratio |
 | **Contextual** | is_in_top_league, is_in_home_league, club bin (top 25 or "Other") |
+| **Loan status** | on_loan (whether the player is on loan at the cutoff date; always `False` for future predictions) |
+| **Fair price** | fair_price_M (linear extrapolation from the two most recent valuations _excluding_ the latest, to ensure independence from current_value) |
 
 #### Segmented Models
 
@@ -339,11 +341,11 @@ How it works:
 
 Three speed presets control candidate pruning:
 
-| Speed | Description | Use Case |
-|-------|-------------|----------|
-| `local` | Aggressive pruning (50–100 candidates per group) | Quick local testing |
-| `fast` | Moderate pruning (90–200 candidates) | Balance of speed and quality |
-| `standard` | No pruning — full computation | Best results, production use |
+| Speed | Label | Description | Use Case |
+|-------|-------|-------------|----------|
+| `standard` | Standard | No pruning — full computation | Best results, production use |
+| `fast` | Fast | Moderate pruning (90–200 candidates) | Balance of speed and quality |
+| `local` | Faster | Aggressive pruning (50–100 candidates per group) | Quick local testing |
 
 ---
 
@@ -351,11 +353,11 @@ Three speed presets control candidate pruning:
 
 Three LLM providers are supported:
 
-| Provider | Model (default) | Environment Variable |
-|----------|----------------|---------------------|
-| OpenAI | `gpt-4o-mini` | `OPENAI_API_KEY` |
-| Anthropic | `claude-3-haiku` | `ANTHROPIC_API_KEY` |
-| Google Gemini | `gemini-2.0-flash` | `GEMINI_API_KEY` |
+| Provider | Display Name | Model (default) | Environment Variable |
+|----------|-------------|----------------|---------------------|
+| OpenAI | ChatGPT | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| Anthropic | Claude | `claude-3-haiku` | `ANTHROPIC_API_KEY` |
+| Google | Gemini | `gemini-2.0-flash` | `GEMINI_API_KEY` |
 
 Set `LLM_PROVIDER` in your `.env` to choose the provider. The summary is generated **by default** — if no API key is found, it is simply skipped (no error).
 
@@ -371,13 +373,19 @@ The LLM receives the full simulation context and produces a structured report wi
 
 #### Sell Recommendations
 
-Before the simulation, the system displays **all squad players** sorted by projected value change:
+Before the simulation, the system displays squad players across three tabs:
 
-- **Full visibility**: All players are shown, sorted by decline magnitude (greatest drop first), so the user can see both declining and growing players at a glance
+- **Full squad**: All players sorted by current market value
+- **Peak reached**: Players whose predicted value is below their current market value (they've peaked financially)
+- **Max expected decline**: Top 5 players by decline magnitude
+
+Within each tab:
+
 - **Visual indicators**: Players losing value show a red ▼ with the decline amount; players gaining value show a green ▲
 - **Fair price**: Each player's fair price (linear extrapolation from their last two valuations) is displayed alongside current and predicted values
-- **Select all declining**: A button to quickly select all players with negative projected value for sale
-- **Manual override**: Users can select exactly which players to sell from the recommendations, or pick any player from the squad
+- **On-loan players**: Shown with reduced opacity and a "loaned" label. They are **not selectable** for sale (they belong to another club) but their **predicted value is still displayed** for reference
+- **Select all / deselect all**: Buttons to quickly select or clear all eligible (non-loaned) players in the current tab
+- **Manual override**: Users can also select players from a position-grouped chip view, where each chip shows the player's current value and predicted value
 
 #### Optimization Objectives
 
@@ -389,6 +397,17 @@ The knapsack optimizer can maximize different metrics depending on the user's st
 | **Net Benefit** | Predicted value − purchase cost | Maximizing absolute profit |
 | **ROI** | (Predicted − Cost) / Cost × 100 | Maximizing return percentage |
 | **Growth %** | Predicted / Current value | Finding undervalued players |
+
+#### Signing Strategies
+
+Four pre-built approaches filter the candidate pool before optimization:
+
+| Strategy | Label | Description |
+|----------|-------|-------------|
+| `max_value` | All players | No age filter — all eligible players are candidates |
+| `young_talents` | Young talents | Only players aged ≤ 23. Build a long-term project |
+| `balanced` | Balanced | Prioritizes prime-age players (25–29) with high predicted value |
+| `veteran_players` | Veterans | Only players aged ≥ 30. Experienced signings with immediate impact |
 
 #### Advanced Filters
 
@@ -429,13 +448,15 @@ This is distinct from `predicted_value`, which uses the full ML model with 60+ f
 
 #### Player Search
 
-A full-text search across all 12,000+ loaded players with filters for:
-- Name (partial match)
+A full-text search across all loaded players with filters for:
+- Name (partial match, **accent-insensitive** — e.g., "atle" matches "Atlético de Madrid")
 - Position (GK, DEF, MID, ATT)
 - Market value range (min/max in millions)
 - Age range (min/max)
 
-Results include market value, predicted value, xGrowth, and fair price for each player.
+Results include market value, predicted value, xGrowth, and fair price for each player. Both the search tab and xGrowth ranking support **pagination** with configurable page sizes.
+
+The xGrowth tab also provides client-side filtering by league, nationality, team name, and slider ranges — all accent-insensitive and without requiring a server reload. The player count displays **filtered / total** (e.g., "213 / 51,389 players") so you always know the scope of the active filters.
 
 ---
 
@@ -458,7 +479,7 @@ Deployed at:
 3. **Player search**: Search across all loaded players with filters (available immediately after loading).
 4. **Sell recommendations**: The system identifies players at their financial peak and recommends them for sale.
 5. **Select players to sell**: Multiselects grouped by position showing player name, position, and market value.
-6. **Optimization configuration**: Select objective (SMV, Net Benefit, ROI, etc.), simulation speed, and approach (max value, young talents, balanced).
+6. **Optimization configuration**: Select objective (SMV, Net Benefit, ROI, etc.), simulation speed (Standard, Fast, Faster), and signing strategy (All players, Young talents, Balanced, Veterans).
 7. **Advanced filters**: League segmentation, banned clubs, banned players, temporal horizon.
 8. **Budget configuration**: Set transfer budget. Checkbox for unlimited budget mode.
 9. **Simulate**: Runs the full simulation.
@@ -540,11 +561,11 @@ Every time a scraping pipeline completes, an **auto-update trigger** comment in 
 
 ### AI / LLM
 
-| Provider | Model | Usage |
-|----------|-------|-------|
-| OpenAI | gpt-4o-mini | `OPENAI_API_KEY` |
-| Anthropic | claude-3-haiku | `ANTHROPIC_API_KEY` |
-| Google Gemini | gemini-2.0-flash | `GEMINI_API_KEY` |
+| Provider | Display Name | Model | Environment Variable |
+|----------|-------------|-------|---------------------|
+| OpenAI | ChatGPT | gpt-4o-mini | `OPENAI_API_KEY` |
+| Anthropic | Claude | claude-3-haiku | `ANTHROPIC_API_KEY` |
+| Google | Gemini | gemini-2.0-flash | `GEMINI_API_KEY` |
 
 ### Project Structure
 
@@ -587,7 +608,7 @@ team-analysis-ai/
 │   │   ├── value_model_{season}.joblib          # Global models
 │   │   ├── value_model_{season}_{segment}.joblib # Segmented models
 │   │   └── *.json                # Model metrics
-│   ├── feature_engineering.py    # 60+ features, PlayerFeatures dataclass
+│   ├── feature_engineering.py    # 65+ features, PlayerFeatures dataclass
 │   ├── train_pipeline.py         # Training CLI (global + segmented)
 │   └── value_predictor.py        # ValuePredictor + SegmentedValuePredictor
 ├── scraping/
@@ -610,12 +631,16 @@ team-analysis-ai/
 │   ├── knapsack_solver.py        # MCKP optimization + speed tiers
 │   ├── transfer_simulator.py     # Main simulation engine
 │   ├── transfer_engine.py        # Alternative API (SimulationResult)
-│   └── llm_summarizer.py         # LLM integration (detailed + simple prompts)
+│   ├── llm_summarizer.py         # LLM integration (detailed + simple prompts)
+│   └── salary_calculator.py      # Effective budget heuristic (~10% of market value)
 ├── webapp/
 │   └── i18n.py                   # Internationalization (ES/EN)
 ├── league.py / team.py / player.py / transfer.py / valuation.py
 ├── fill_club_names.py            # Backfill missing club names
+├── fill_players_data.py          # Backfill missing player data
 ├── discover_leagues.py           # Discover leagues for scraper config
+├── patch_dataset_on_loan.py      # Add on_loan feature to existing datasets
+├── patch_dataset_fair_price.py   # Add fair_price feature to existing datasets
 ├── streamlit_app.py              # Streamlit web app
 ├── demo.ipynb                    # Interactive demo notebook
 ├── requirements.txt
