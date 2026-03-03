@@ -21,7 +21,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from datetime import datetime
@@ -36,7 +35,7 @@ _ROOT = Path(__file__).parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from scraping.utils.helpers import DATA_DIR, list_json_bases, load_json, parse_date
+from scraping.utils.helpers import DATA_DIR, list_json_bases, load_json, parse_date, save_json_with_parts
 
 # ── Configuration ────────────────────────────────────────────────────────────
 TM_API_URL = "https://tmapi-alpha.transfermarkt.technology"
@@ -509,8 +508,10 @@ def patch_files(
 
         needs_write = file_filled > 0 or filepath in force_write
         if needs_write:
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(records, f, ensure_ascii=False, indent=2)
+            base = Path(filepath).stem
+            if "_part" in base:
+                base = base.rsplit("_part", 1)[0]
+            save_json_with_parts(records, base)
             total_filled += file_filled
 
     print(f"\nTotal names filled across all files: {total_filled}")
